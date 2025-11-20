@@ -13,6 +13,7 @@
 
     const STATE = {
         cache: new Map(),
+        commentsCache: new Map(),
         popup: null,
         overlay: null,
     };
@@ -97,6 +98,19 @@
         return { producer, vocal };
     }
 
+    function parseComments(htmlText) {
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(htmlText, 'text/html');
+        const items = doc.querySelectorAll('.comment_list li.comment_item');
+        return Array.from(items)
+            .map((item) => {
+                const author = item.querySelector('.comment_username a')?.textContent?.trim() || 'Неизвестно';
+                const text = item.querySelector('.comment_body')?.textContent?.trim() || '';
+                return { author, text };
+            })
+            .filter((c) => c.text);
+    }
+
     async function fetchDetails(audioId) {
         if (STATE.cache.has(audioId)) {
             return STATE.cache.get(audioId);
@@ -114,6 +128,23 @@
         return details;
     }
 
+    async function fetchComments(audioId) {
+        if (STATE.commentsCache.has(audioId)) {
+            return STATE.commentsCache.get(audioId);
+        }
+
+        const url = `https://rumedia.io/media/track/${audioId}`;
+        const response = await fetch(url, { credentials: 'include' });
+        if (!response.ok) {
+            throw new Error(`Не удалось получить комментарии (${response.status})`);
+        }
+
+        const text = await response.text();
+        const comments = parseComments(text);
+        STATE.commentsCache.set(audioId, comments);
+        return comments;
+    }
+
     function buildHtml(details) {
         return `
             <h4 style="margin-top:0;">Детали релиза</h4>
@@ -122,6 +153,42 @@
         `;
     }
 
+    function buildCommentsHtml(comments) {
+        if (!comments || comments.length === 0) {
+            return '<p>Комментариев нет.</p>';
+        }
+
+        const items = comments
+            .map((c) => `<li style="margin-bottom:8px;"><strong>${c.author}:</strong> ${c.text}</li>`)
+            .join('');
+
+        return `
+            <h4 style="margin-top:0;">Комментарии</h4>
+            <ul style="padding-left:16px;">${items}</ul>
+        `;
+    }
+
+    function getButtonsContainer(form) {
+        let container = form.querySelector('.release-helper-buttons');
+        if (container) {
+            return container;
+        }
+
+        container = document.createElement('div');
+        container.className = 'release-helper-buttons';
+        container.style.marginTop = '8px';
+        container.style.display = 'flex';
+        container.style.flexWrap = 'wrap';
+        container.style.gap = '6px';
+
+        const queueBtn = form.querySelector('input[name="add_queue"]');
+        if (queueBtn && queueBtn.parentNode) {
+            queueBtn.parentNode.insertBefore(container, queueBtn.nextSibling);
+        } else {
+            form.appendChild(container);
+        }
+
+        return container;
     function findEditButton(form) {
         return Array.from(form.querySelectorAll('a, button, input[type="button"], input[type="submit"]')).find(
             (el) => /редактировать/i.test(el.textContent || el.value || '')
@@ -150,6 +217,32 @@
             }
         });
 
+        const container = getButtonsContainer(form);
+        container.appendChild(btn);
+    }
+
+    function createCommentsButton(form, audioId) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.textContent = 'Наличие комментов';
+        btn.className = 'btn btn-warning';
+
+        btn.addEventListener('click', async () => {
+            btn.disabled = true;
+            btn.textContent = 'Загрузка...';
+            try {
+                const comments = await fetchComments(audioId);
+                showPopup(buildCommentsHtml(comments));
+            } catch (error) {
+                showPopup(`<p style="color:red;">${error.message}</p>`);
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Наличие комментов';
+            }
+        });
+
+        const container = getButtonsContainer(form);
+        container.appendChild(btn);
         const editButton = findEditButton(form);
         if (editButton && editButton.parentNode) {
             editButton.parentNode.insertBefore(btn, editButton);
@@ -180,6 +273,7 @@
             }
             form.dataset.detailsButtonAdded = '1';
             createInfoButton(form, audioInput.value);
+            createCommentsButton(form, audioInput.value);
         });
     }
 
