@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         RuMedia Release Details Helper
 // @namespace    https://rumedia.io/
-// @version      1.1.0
+// @version      1.2.0
 // @description  Показывает подробности релиза (Автор инструментала, вокал) и наличие модераторских комментариев прямо в списке очереди модерации.
 // @author       Custom
 // @match        https://rumedia.io/media/admin-cp/manage-songs*
@@ -111,7 +111,8 @@
             .map((item) => {
                 const author = item.querySelector('.comment_username a')?.textContent?.trim() || 'Неизвестно';
                 const text = item.querySelector('.comment_body')?.textContent?.trim() || '';
-                return { author, text };
+                const time = item.querySelector('.comment_published .ajax-time')?.textContent?.trim() || '';
+                return { author, text, time };
             })
             .filter((c) => c.text);
     }
@@ -165,8 +166,10 @@
 
         const items = comments
             .map(
-                (c) =>
-                    `<li style="margin-bottom:8px; line-height:1.4;"><strong>${c.author}:</strong> <span>${c.text}</span></li>`
+                (c) => {
+                    const when = c.time ? `<span style="color:#555; font-size:12px; margin-left:4px;">(${c.time})</span>` : '';
+                    return `<li style="margin-bottom:8px; line-height:1.4;"><strong>${c.author}:</strong> <span>${c.text}</span> ${when}</li>`;
+                }
             )
             .join('');
 
