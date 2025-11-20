@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         RuMedia Release Details Helper
 // @namespace    https://rumedia.io/
-// @version      1.2.0
+// @version      1.3.0
 // @description  Показывает подробности релиза (Автор инструментала, вокал) и наличие модераторских комментариев прямо в списке очереди модерации.
 // @author       Custom
 // @match        https://rumedia.io/media/admin-cp/manage-songs*
@@ -103,6 +103,51 @@
         return { producer, vocal };
     }
 
+    function pluralize(value, forms) {
+        const abs = Math.abs(value) % 100;
+        const last = abs % 10;
+        if (abs > 10 && abs < 20) return forms[2];
+        if (last > 1 && last < 5) return forms[1];
+        if (last === 1) return forms[0];
+        return forms[2];
+    }
+
+    function formatDateTime(timestampMs) {
+        const date = new Date(timestampMs);
+        const pad = (n) => String(n).padStart(2, '0');
+        return `${pad(date.getDate())}.${pad(date.getMonth() + 1)}.${date.getFullYear()} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+    }
+
+    function formatRelative(timestampMs) {
+        const diffSec = Math.max(0, Math.round((Date.now() - timestampMs) / 1000));
+        if (diffSec < 60) return 'меньше минуты назад';
+
+        const minutes = Math.round(diffSec / 60);
+        if (minutes < 60) {
+            return `${minutes} ${pluralize(minutes, ['минута', 'минуты', 'минут'])} назад`;
+        }
+
+        const hours = Math.round(diffSec / 3600);
+        if (hours < 24) {
+            return `${hours} ${pluralize(hours, ['час', 'часа', 'часов'])} назад`;
+        }
+
+        const days = Math.round(diffSec / 86400);
+        return `${days} ${pluralize(days, ['день', 'дня', 'дней'])} назад`;
+    }
+
+    function formatTimestamp(rawTimestamp, fallbackText) {
+        const timestamp = Number(rawTimestamp);
+        if (!Number.isFinite(timestamp)) {
+            return fallbackText || '';
+        }
+
+        const timestampMs = timestamp * 1000;
+        const relative = formatRelative(timestampMs);
+        const absolute = formatDateTime(timestampMs);
+        return `${relative} (${absolute})`;
+    }
+
     function parseComments(htmlText) {
         const parser = new DOMParser();
         const doc = parser.parseFromString(htmlText, 'text/html');
@@ -111,7 +156,10 @@
             .map((item) => {
                 const author = item.querySelector('.comment_username a')?.textContent?.trim() || 'Неизвестно';
                 const text = item.querySelector('.comment_body')?.textContent?.trim() || '';
-                const time = item.querySelector('.comment_published .ajax-time')?.textContent?.trim() || '';
+                const timeEl = item.querySelector('.comment_published .ajax-time');
+                const timeRaw = timeEl?.getAttribute('title');
+                const timeFallback = timeEl?.textContent?.trim() || '';
+                const time = formatTimestamp(timeRaw, timeFallback);
                 return { author, text, time };
             })
             .filter((c) => c.text);
