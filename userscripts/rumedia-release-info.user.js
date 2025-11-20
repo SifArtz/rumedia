@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         RuMedia Release Details Helper
 // @namespace    https://rumedia.io/
-// @version      1.0.0
-// @description  Показывает подробности релиза (Автор инструментала, вокал) прямо в списке очереди модерации.
+// @version      1.1.0
+// @description  Показывает подробности релиза (Автор инструментала, вокал) и наличие модераторских комментариев прямо в списке очереди модерации.
 // @author       Custom
 // @match        https://rumedia.io/media/admin-cp/manage-songs*
 // @grant        none
@@ -20,14 +20,16 @@
 
     function createOverlay() {
         const overlay = document.createElement('div');
-        overlay.style.position = 'fixed';
-        overlay.style.top = '0';
-        overlay.style.left = '0';
-        overlay.style.width = '100%';
-        overlay.style.height = '100%';
-        overlay.style.background = 'rgba(0,0,0,0.4)';
-        overlay.style.zIndex = '9998';
-        overlay.style.display = 'none';
+        Object.assign(overlay.style, {
+            position: 'fixed',
+            top: '0',
+            left: '0',
+            width: '100%',
+            height: '100%',
+            background: 'rgba(0,0,0,0.4)',
+            zIndex: '9998',
+            display: 'none',
+        });
         overlay.addEventListener('click', hidePopup);
         document.body.appendChild(overlay);
         STATE.overlay = overlay;
@@ -35,17 +37,20 @@
 
     function createPopup() {
         const popup = document.createElement('div');
-        popup.style.position = 'fixed';
-        popup.style.top = '50%';
-        popup.style.left = '50%';
-        popup.style.transform = 'translate(-50%, -50%)';
-        popup.style.background = '#fff';
-        popup.style.borderRadius = '8px';
-        popup.style.padding = '16px 20px';
-        popup.style.boxShadow = '0 4px 12px rgba(0, 0, 0, 0.25)';
-        popup.style.zIndex = '9999';
-        popup.style.minWidth = '260px';
-        popup.style.display = 'none';
+        Object.assign(popup.style, {
+            position: 'fixed',
+            top: '50%',
+            left: '50%',
+            transform: 'translate(-50%, -50%)',
+            background: '#fff',
+            borderRadius: '8px',
+            padding: '16px 20px 20px',
+            boxShadow: '0 4px 12px rgba(0, 0, 0, 0.25)',
+            zIndex: '9999',
+            minWidth: '300px',
+            maxWidth: '520px',
+            display: 'none',
+        });
 
         const closeBtn = document.createElement('button');
         closeBtn.textContent = 'Закрыть';
@@ -147,24 +152,27 @@
 
     function buildHtml(details) {
         return `
-            <h4 style="margin-top:0;">Детали релиза</h4>
-            <p><strong>Автор инструментала:</strong> ${details.producer}</p>
-            <p><strong>Вокал:</strong> ${details.vocal}</p>
+            <h4 style="margin:0 0 8px 0;">Детали релиза</h4>
+            <p style="margin:4px 0;"><strong>Автор инструментала:</strong> ${details.producer}</p>
+            <p style="margin:4px 0;"><strong>Вокал:</strong> ${details.vocal}</p>
         `;
     }
 
     function buildCommentsHtml(comments) {
         if (!comments || comments.length === 0) {
-            return '<p>Комментариев нет.</p>';
+            return '<h4 style="margin:0 0 8px 0;">Комментарии</h4><p style="margin:4px 0;">Комментариев нет.</p>';
         }
 
         const items = comments
-            .map((c) => `<li style="margin-bottom:8px;"><strong>${c.author}:</strong> ${c.text}</li>`)
+            .map(
+                (c) =>
+                    `<li style="margin-bottom:8px; line-height:1.4;"><strong>${c.author}:</strong> <span>${c.text}</span></li>`
+            )
             .join('');
 
         return `
-            <h4 style="margin-top:0;">Комментарии</h4>
-            <ul style="padding-left:16px;">${items}</ul>
+            <h4 style="margin:0 0 8px 0;">Комментарии</h4>
+            <ul style="padding-left:18px; margin:0;">${items}</ul>
         `;
     }
 
@@ -189,31 +197,26 @@
         }
 
         return container;
-    function findEditButton(form) {
-        return Array.from(form.querySelectorAll('a, button, input[type="button"], input[type="submit"]')).find(
-            (el) => /редактировать/i.test(el.textContent || el.value || '')
-        );
     }
 
     function createInfoButton(form, audioId) {
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.textContent = 'Посмотреть детали';
-        btn.style.marginTop = '8px';
-        btn.style.marginRight = '8px';
         btn.className = 'btn btn-info';
 
         btn.addEventListener('click', async () => {
             btn.disabled = true;
+            const previous = btn.textContent;
             btn.textContent = 'Загрузка...';
             try {
                 const details = await fetchDetails(audioId);
                 showPopup(buildHtml(details));
             } catch (error) {
-                showPopup(`<p style="color:red;">${error.message}</p>`);
+                showPopup(`<p style="color:red; margin:0;">${error.message}</p>`);
             } finally {
                 btn.disabled = false;
-                btn.textContent = 'Посмотреть детали';
+                btn.textContent = previous;
             }
         });
 
@@ -229,33 +232,21 @@
 
         btn.addEventListener('click', async () => {
             btn.disabled = true;
+            const previous = btn.textContent;
             btn.textContent = 'Загрузка...';
             try {
                 const comments = await fetchComments(audioId);
                 showPopup(buildCommentsHtml(comments));
             } catch (error) {
-                showPopup(`<p style="color:red;">${error.message}</p>`);
+                showPopup(`<p style="color:red; margin:0;">${error.message}</p>`);
             } finally {
                 btn.disabled = false;
-                btn.textContent = 'Наличие комментов';
+                btn.textContent = previous;
             }
         });
 
         const container = getButtonsContainer(form);
         container.appendChild(btn);
-        const editButton = findEditButton(form);
-        if (editButton && editButton.parentNode) {
-            editButton.parentNode.insertBefore(btn, editButton);
-            return;
-        }
-
-        const queueBtn = form.querySelector('input[name="add_queue"]');
-        if (queueBtn && queueBtn.parentNode) {
-            queueBtn.parentNode.insertBefore(document.createElement('br'), queueBtn.nextSibling);
-            queueBtn.parentNode.insertBefore(btn, queueBtn.nextSibling.nextSibling);
-        } else {
-            form.appendChild(btn);
-        }
     }
 
     function initButtons() {
