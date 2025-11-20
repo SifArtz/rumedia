@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         RuMedia Release Details Helper
 // @namespace    https://rumedia.io/
-// @version      1.3.0
+// @version      1.3.1
 // @description  Показывает подробности релиза (Автор инструментала, вокал) и наличие модераторских комментариев прямо в списке очереди модерации.
 // @author       Custom
 // @match        https://rumedia.io/media/admin-cp/manage-songs*
@@ -137,12 +137,17 @@
     }
 
     function formatTimestamp(rawTimestamp, fallbackText) {
-        const timestamp = Number(rawTimestamp);
-        if (!Number.isFinite(timestamp)) {
+        const tryParse = (value) => {
+            const num = Number(value);
+            return Number.isFinite(num) ? num : null;
+        };
+
+        const parsed = tryParse(rawTimestamp) ?? tryParse(fallbackText);
+        if (parsed === null) {
             return fallbackText || '';
         }
 
-        const timestampMs = timestamp * 1000;
+        const timestampMs = parsed * 1000;
         const relative = formatRelative(timestampMs);
         const absolute = formatDateTime(timestampMs);
         return `${relative} (${absolute})`;
@@ -213,12 +218,10 @@
         }
 
         const items = comments
-            .map(
-                (c) => {
-                    const when = c.time ? `<span style="color:#555; font-size:12px; margin-left:4px;">(${c.time})</span>` : '';
-                    return `<li style="margin-bottom:8px; line-height:1.4;"><strong>${c.author}:</strong> <span>${c.text}</span> ${when}</li>`;
-                }
-            )
+            .map((c) => {
+                const when = c.time ? `<div style="color:#555; font-size:12px; margin-top:2px;">${c.time}</div>` : '';
+                return `<li style="margin-bottom:8px; line-height:1.4;"><strong>${c.author}:</strong> <span>${c.text}</span>${when}</li>`;
+            })
             .join('');
 
         return `
