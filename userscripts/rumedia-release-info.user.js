@@ -122,12 +122,18 @@
         `;
     }
 
+    function findEditButton(form) {
+        return Array.from(form.querySelectorAll('a, button, input[type="button"], input[type="submit"]')).find(
+            (el) => /редактировать/i.test(el.textContent || el.value || '')
+        );
+    }
+
     function createInfoButton(form, audioId) {
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.textContent = 'Посмотреть детали';
         btn.style.marginTop = '8px';
-        btn.style.marginLeft = '4px';
+        btn.style.marginRight = '8px';
         btn.className = 'btn btn-info';
 
         btn.addEventListener('click', async () => {
@@ -143,6 +149,12 @@
                 btn.textContent = 'Посмотреть детали';
             }
         });
+
+        const editButton = findEditButton(form);
+        if (editButton && editButton.parentNode) {
+            editButton.parentNode.insertBefore(btn, editButton);
+            return;
+        }
 
         const queueBtn = form.querySelector('input[name="add_queue"]');
         if (queueBtn && queueBtn.parentNode) {
