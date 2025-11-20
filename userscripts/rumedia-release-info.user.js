@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         RuMedia Release Details Helper
 // @namespace    https://rumedia.io/
-// @version      1.3.1
+// @version      1.3.2
 // @description  Показывает подробности релиза (Автор инструментала, вокал) и наличие модераторских комментариев прямо в списке очереди модерации.
 // @author       Custom
 // @match        https://rumedia.io/media/admin-cp/manage-songs*
@@ -16,6 +16,11 @@
         commentsCache: new Map(),
         popup: null,
         overlay: null,
+    };
+
+    const MODERATOR_NAMES = {
+        moderator3: 'Руслан',
+        moderator7: 'Матвей',
     };
 
     function createOverlay() {
@@ -153,13 +158,25 @@
         return `${relative} (${absolute})`;
     }
 
+    function getLoginFromLink(link) {
+        if (!link) return '';
+        const href = link.getAttribute('href') || '';
+        const match = href.match(/\/(?:media|profile)\/([^/?#]+)/i);
+        if (match && match[1]) {
+            return match[1];
+        }
+        return link.textContent?.trim() || '';
+    }
+
     function parseComments(htmlText) {
         const parser = new DOMParser();
         const doc = parser.parseFromString(htmlText, 'text/html');
         const items = doc.querySelectorAll('.comment_list li.comment_item');
         return Array.from(items)
             .map((item) => {
-                const author = item.querySelector('.comment_username a')?.textContent?.trim() || 'Неизвестно';
+                const userLink = item.querySelector('.comment_username a');
+                const login = getLoginFromLink(userLink) || 'Неизвестно';
+                const author = MODERATOR_NAMES[login] || login;
                 const text = item.querySelector('.comment_body')?.textContent?.trim() || '';
                 const timeEl = item.querySelector('.comment_published .ajax-time');
                 const timeRaw = timeEl?.getAttribute('title');
