@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         RuMedia Release Details Helper
 // @namespace    https://rumedia.io/
-// @version      1.3.2
+// @version      1.4.0
 // @description  Показывает подробности релиза (Автор инструментала, вокал) и наличие модераторских комментариев прямо в списке очереди модерации.
 // @author       Custom
 // @match        https://rumedia.io/media/admin-cp/manage-songs*
@@ -14,91 +14,12 @@
     const STATE = {
         cache: new Map(),
         commentsCache: new Map(),
-        popup: null,
-        overlay: null,
     };
 
     const MODERATOR_NAMES = {
         moderator3: 'Руслан',
         moderator7: 'Матвей',
     };
-
-    function createOverlay() {
-        const overlay = document.createElement('div');
-        Object.assign(overlay.style, {
-            position: 'fixed',
-            top: '0',
-            left: '0',
-            width: '100%',
-            height: '100%',
-            background: 'rgba(0,0,0,0.4)',
-            zIndex: '9998',
-            display: 'none',
-        });
-        overlay.addEventListener('click', hidePopup);
-        document.body.appendChild(overlay);
-        STATE.overlay = overlay;
-    }
-
-    function createPopup() {
-        const popup = document.createElement('div');
-        Object.assign(popup.style, {
-            position: 'fixed',
-            top: '50%',
-            left: '50%',
-            transform: 'translate(-50%, -50%)',
-            background: '#fff',
-            borderRadius: '8px',
-            padding: '16px 20px 20px',
-            boxShadow: '0 4px 12px rgba(0, 0, 0, 0.25)',
-            zIndex: '9999',
-            minWidth: '300px',
-            maxWidth: '520px',
-            display: 'none',
-        });
-
-        const closeBtn = document.createElement('button');
-        closeBtn.textContent = 'Закрыть';
-        closeBtn.style.cssText = 'float:right; margin:-8px -8px 0 0;';
-        closeBtn.addEventListener('click', hidePopup);
-
-        const content = document.createElement('div');
-        content.id = 'release-details-content';
-
-        popup.appendChild(closeBtn);
-        popup.appendChild(content);
-        document.body.appendChild(popup);
-
-        STATE.popup = popup;
-    }
-
-    function ensureUi() {
-        if (!STATE.overlay) {
-            createOverlay();
-        }
-        if (!STATE.popup) {
-            createPopup();
-        }
-    }
-
-    function hidePopup() {
-        if (STATE.popup) {
-            STATE.popup.style.display = 'none';
-        }
-        if (STATE.overlay) {
-            STATE.overlay.style.display = 'none';
-        }
-    }
-
-    function showPopup(html) {
-        ensureUi();
-        const content = document.getElementById('release-details-content');
-        if (content) {
-            content.innerHTML = html;
-        }
-        STATE.overlay.style.display = 'block';
-        STATE.popup.style.display = 'block';
-    }
 
     function parseDetails(htmlText) {
         const parser = new DOMParser();
@@ -223,15 +144,16 @@
 
     function buildHtml(details) {
         return `
-            <h4 style="margin:0 0 8px 0;">Детали релиза</h4>
-            <p style="margin:4px 0;"><strong>Автор инструментала:</strong> ${details.producer}</p>
-            <p style="margin:4px 0;"><strong>Вокал:</strong> ${details.vocal}</p>
+            <div class="release-inline-details" style="margin-top:10px; padding:8px; background:#f5f5f5; border-radius:6px;">
+                <div style="margin:2px 0;"><strong>Автор инструментала:</strong> ${details.producer}</div>
+                <div style="margin:2px 0;"><strong>Вокал:</strong> ${details.vocal}</div>
+            </div>
         `;
     }
 
     function buildCommentsHtml(comments) {
         if (!comments || comments.length === 0) {
-            return '<h4 style="margin:0 0 8px 0;">Комментарии</h4><p style="margin:4px 0;">Комментариев нет.</p>';
+            return '<div class="release-inline-comments"><h4 style="margin:0 0 6px 0;">Комментарии</h4><p style="margin:2px 0;">Комментариев нет.</p></div>';
         }
 
         const items = comments
@@ -242,100 +164,97 @@
             .join('');
 
         return `
-            <h4 style="margin:0 0 8px 0;">Комментарии</h4>
-            <ul style="padding-left:18px; margin:0;">${items}</ul>
+            <div class="release-inline-comments">
+                <h4 style="margin:0 0 6px 0;">Комментарии</h4>
+                <ul style="padding-left:18px; margin:0;">${items}</ul>
+            </div>
         `;
     }
 
-    function getButtonsContainer(form) {
-        let container = form.querySelector('.release-helper-buttons');
-        if (container) {
-            return container;
+    function findRecognitionRow(row) {
+        let pointer = row.nextElementSibling;
+        while (pointer) {
+            const firstCellText = pointer.querySelector('td')?.textContent?.trim();
+            if (firstCellText && firstCellText.startsWith('Распознание')) {
+                return pointer;
+            }
+            const hasForm = pointer.querySelector('form input[name="audio_id"]');
+            if (hasForm) {
+                break;
+            }
+            pointer = pointer.nextElementSibling;
+        }
+        return null;
+    }
+
+    function renderDetails(row, details) {
+        const infoCell = row.querySelector('td:nth-child(4)');
+        if (!infoCell) {
+            return;
         }
 
-        container = document.createElement('div');
-        container.className = 'release-helper-buttons';
-        container.style.marginTop = '8px';
-        container.style.display = 'flex';
-        container.style.flexWrap = 'wrap';
-        container.style.gap = '6px';
-
-        const queueBtn = form.querySelector('input[name="add_queue"]');
-        if (queueBtn && queueBtn.parentNode) {
-            queueBtn.parentNode.insertBefore(container, queueBtn.nextSibling);
+        const existing = infoCell.querySelector('.release-inline-details');
+        const wrapper = document.createElement('div');
+        wrapper.innerHTML = buildHtml(details);
+        const content = wrapper.firstElementChild;
+        if (existing) {
+            existing.replaceWith(content);
         } else {
-            form.appendChild(container);
+            infoCell.appendChild(content);
+        }
+    }
+
+    function renderComments(row, comments) {
+        const recognitionRow = findRecognitionRow(row) || row;
+        const commentsRow = document.createElement('tr');
+        const columnsCount = row.children.length || 1;
+        const commentsCell = document.createElement('td');
+        commentsCell.colSpan = columnsCount;
+        commentsCell.style.background = '#fbfbfb';
+        commentsCell.style.borderTop = '1px solid #e0e0e0';
+        commentsCell.innerHTML = buildCommentsHtml(comments);
+        commentsRow.className = 'release-comments-row';
+        commentsRow.appendChild(commentsCell);
+
+        const existing = recognitionRow.nextElementSibling;
+        if (existing && existing.classList.contains('release-comments-row')) {
+            existing.replaceWith(commentsRow);
+        } else {
+            recognitionRow.insertAdjacentElement('afterend', commentsRow);
+        }
+    }
+
+    async function renderReleaseInfo(form, audioId) {
+        const row = form.closest('tr');
+        if (!row) {
+            return;
         }
 
-        return container;
+        try {
+            const [details, comments] = await Promise.all([fetchDetails(audioId), fetchComments(audioId)]);
+            renderDetails(row, details);
+            renderComments(row, comments);
+            form.dataset.detailsLoaded = '1';
+        } catch (error) {
+            renderDetails(row, { producer: error.message, vocal: '—' });
+        }
     }
 
-    function createInfoButton(form, audioId) {
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.textContent = 'Посмотреть детали';
-        btn.className = 'btn btn-info';
-
-        btn.addEventListener('click', async () => {
-            btn.disabled = true;
-            const previous = btn.textContent;
-            btn.textContent = 'Загрузка...';
-            try {
-                const details = await fetchDetails(audioId);
-                showPopup(buildHtml(details));
-            } catch (error) {
-                showPopup(`<p style="color:red; margin:0;">${error.message}</p>`);
-            } finally {
-                btn.disabled = false;
-                btn.textContent = previous;
-            }
-        });
-
-        const container = getButtonsContainer(form);
-        container.appendChild(btn);
-    }
-
-    function createCommentsButton(form, audioId) {
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.textContent = 'Наличие комментов';
-        btn.className = 'btn btn-warning';
-
-        btn.addEventListener('click', async () => {
-            btn.disabled = true;
-            const previous = btn.textContent;
-            btn.textContent = 'Загрузка...';
-            try {
-                const comments = await fetchComments(audioId);
-                showPopup(buildCommentsHtml(comments));
-            } catch (error) {
-                showPopup(`<p style="color:red; margin:0;">${error.message}</p>`);
-            } finally {
-                btn.disabled = false;
-                btn.textContent = previous;
-            }
-        });
-
-        const container = getButtonsContainer(form);
-        container.appendChild(btn);
-    }
-
-    function initButtons() {
+    function processForms() {
         const forms = Array.from(document.querySelectorAll('form')).filter((form) =>
             form.querySelector('input[name="audio_id"]') && form.querySelector('input[name="add_queue"]')
         );
 
         forms.forEach((form) => {
-            if (form.dataset.detailsButtonAdded) {
+            if (form.dataset.detailsLoaded) {
                 return;
             }
             const audioInput = form.querySelector('input[name="audio_id"]');
             if (!audioInput || !audioInput.value) {
                 return;
             }
-            form.dataset.detailsButtonAdded = '1';
-            createInfoButton(form, audioInput.value);
-            createCommentsButton(form, audioInput.value);
+            form.dataset.detailsLoaded = 'loading';
+            renderReleaseInfo(form, audioInput.value);
         });
     }
 
@@ -345,7 +264,7 @@
             return;
         }
 
-        const observer = new MutationObserver(() => initButtons());
+        const observer = new MutationObserver(() => processForms());
         observer.observe(table, { childList: true, subtree: true });
     }
 
@@ -358,9 +277,7 @@
     }
 
     ready(() => {
-        ensureUi();
-        initButtons();
+        processForms();
         observeTable();
     });
 })();
-
