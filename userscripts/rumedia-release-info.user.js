@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         RuMedia Helper — Details, Comments, Zoom, Album Authors (v2.2)
+// @name         RuMedia Helper — Details, Comments, Zoom, Album Authors (v2.4)
 // @namespace    https://rumedia.io/
-// @version      2.2
+// @version      2.4
 // @description  Подробности треков, комментарии, мат, zoom обложек и авторы в edit-album + комментарии альбома восстановлены.
 // @author       Ruslan
 // @match        https://rumedia.io/media/admin-cp/manage-songs?check*
@@ -23,6 +23,19 @@ const MODERATOR_NAMES = {
     moderator7: 'Матвей',
     moderator: 'Илья',
 };
+
+const NORMALIZED_MODERATOR_NAMES = Object.fromEntries(
+    Object.entries(MODERATOR_NAMES).map(([k, v]) => [normalizeLogin(k), v])
+);
+
+function normalizeLogin(login) {
+    return login.trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+function resolveModeratorName(login) {
+    const normalized = normalizeLogin(login);
+    return NORMALIZED_MODERATOR_NAMES[normalized] || MODERATOR_NAMES[normalized] || MODERATOR_NAMES[login] || login;
+}
 
 /* ========================================================================
    PARSE DETAILS
@@ -51,7 +64,7 @@ function parseComments(html) {
 
     return [...items].map(i => {
         const login = i.querySelector('.comment_username a')?.textContent?.trim() || 'Неизвестно';
-        const author = MODERATOR_NAMES[login] || login;
+        const author = resolveModeratorName(login);
 
         const text = i.querySelector('.comment_body')?.textContent?.trim() || '';
 
@@ -71,10 +84,18 @@ function parseComments(html) {
    FETCH
 ======================================================================== */
 
+function fetchWithTimeout(url, opts = {}, timeout = 10000) {
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), timeout);
+    const options = { ...opts, signal: controller.signal };
+
+    return fetch(url, options).finally(() => clearTimeout(t));
+}
+
 async function fetchDetails(id) {
     if (STATE.cache.has(id)) return STATE.cache.get(id);
 
-    const r = await fetch(`https://rumedia.io/media/edit-track/${id}`, { credentials:"include" });
+    const r = await fetchWithTimeout(`https://rumedia.io/media/edit-track/${id}`, { credentials:"include" });
     if (!r.ok) throw new Error("Ошибка " + r.status);
 
     const html = await r.text();
@@ -86,7 +107,7 @@ async function fetchDetails(id) {
 async function fetchCommentsTrack(id) {
     if (STATE.commentsCache.has(id)) return STATE.commentsCache.get(id);
 
-    const r = await fetch(`https://rumedia.io/media/track/${id}`, { credentials:"include" });
+    const r = await fetchWithTimeout(`https://rumedia.io/media/track/${id}`, { credentials:"include" });
     if (!r.ok) throw new Error("Ошибка " + r.status);
 
     const html = await r.text();
@@ -99,7 +120,7 @@ async function fetchAlbumComments(slug) {
     const key = "album:" + slug;
     if (STATE.commentsCache.has(key)) return STATE.commentsCache.get(key);
 
-    const r = await fetch(`https://rumedia.io/media/album/${slug}`, { credentials:"include" });
+    const r = await fetchWithTimeout(`https://rumedia.io/media/album/${slug}`, { credentials:"include" });
     if (!r.ok) throw new Error("Ошибка " + r.status);
 
     const html = await r.text();
@@ -209,6 +230,11 @@ async function renderTrackInfo(form, id) {
         form.dataset.detailsLoaded = "1";
     } catch (e) {
         renderDetailsRow(row, { producer: e.message, vocal:"—", age:"—" });
+        form.dataset.detailsLoaded = "error";
+        setTimeout(() => {
+            delete form.dataset.detailsLoaded;
+            processForms();
+        }, 2000);
     }
 }
 
@@ -240,23 +266,30 @@ function getAlbumSlug(row) {
 async function processAlbumRows() {
     if (!location.pathname.includes("/manage-albums")) return;
 
-    const rows = document.querySelectorAll(".table-responsive1 tbody tr[id]");
+    const rows = [...document.querySelectorAll(".table-responsive1 tbody tr[id]")]
+        .filter(r => !r.dataset.albumCommentsLoaded);
 
-    for (const row of rows) {
-        if (row.dataset.albumCommentsLoaded) continue;
+    const jobs = rows.map(row => handleAlbumRow(row));
+    if (jobs.length) await Promise.allSettled(jobs);
+}
 
-        const slug = getAlbumSlug(row);
-        if (!slug) continue;
+async function handleAlbumRow(row) {
+    const slug = getAlbumSlug(row);
+    if (!slug) return;
 
-        row.dataset.albumCommentsLoaded = "loading";
+    row.dataset.albumCommentsLoaded = "loading";
 
-        try {
-            const comments = await fetchAlbumComments(slug);
-            renderCommentsRow(row, comments, false);
-            row.dataset.albumCommentsLoaded = "1";
-        } catch (e) {
-            renderCommentsRow(row, [{ author:"Ошибка", text:e.message, time:"" }], false);
-        }
+    try {
+        const comments = await fetchAlbumComments(slug);
+        renderCommentsRow(row, comments, false);
+        row.dataset.albumCommentsLoaded = "1";
+    } catch (e) {
+        renderCommentsRow(row, [{ author:"Ошибка", text:e.message, time:"" }], false);
+        row.dataset.albumCommentsLoaded = "error";
+        setTimeout(() => {
+            delete row.dataset.albumCommentsLoaded;
+            processAlbumRows();
+        }, 2000);
     }
 }
 
@@ -306,7 +339,7 @@ function enableCoverZoom() {
 ======================================================================== */
 
 async function fetchTrackAuthors(id) {
-    const r = await fetch(`https://rumedia.io/media/edit-track/${id}`, { credentials:"include" });
+    const r = await fetchWithTimeout(`https://rumedia.io/media/edit-track/${id}`, { credentials:"include" });
     if (!r.ok) return null;
 
     const html = await r.text();
