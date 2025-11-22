@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         RuMedia Helper — Details, Comments, Zoom, Album Authors (v2.3)
+// @name         RuMedia Helper — Details, Comments, Zoom, Album Authors (v2.4)
 // @namespace    https://rumedia.io/
-// @version      2.3
+// @version      2.4
 // @description  Подробности треков, комментарии, мат, zoom обложек и авторы в edit-album + комментарии альбома восстановлены.
 // @author       Ruslan
 // @match        https://rumedia.io/media/admin-cp/manage-songs?check*
@@ -23,6 +23,19 @@ const MODERATOR_NAMES = {
     moderator7: 'Матвей',
     moderator: 'Илья',
 };
+
+const NORMALIZED_MODERATOR_NAMES = Object.fromEntries(
+    Object.entries(MODERATOR_NAMES).map(([k, v]) => [normalizeLogin(k), v])
+);
+
+function normalizeLogin(login) {
+    return login.trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+function resolveModeratorName(login) {
+    const normalized = normalizeLogin(login);
+    return NORMALIZED_MODERATOR_NAMES[normalized] || MODERATOR_NAMES[normalized] || MODERATOR_NAMES[login] || login;
+}
 
 /* ========================================================================
    PARSE DETAILS
@@ -51,8 +64,7 @@ function parseComments(html) {
 
     return [...items].map(i => {
         const login = i.querySelector('.comment_username a')?.textContent?.trim() || 'Неизвестно';
-        const normalized = login.toLowerCase();
-        const author = MODERATOR_NAMES[normalized] || MODERATOR_NAMES[login] || login;
+        const author = resolveModeratorName(login);
 
         const text = i.querySelector('.comment_body')?.textContent?.trim() || '';
 
@@ -254,28 +266,30 @@ function getAlbumSlug(row) {
 async function processAlbumRows() {
     if (!location.pathname.includes("/manage-albums")) return;
 
-    const rows = document.querySelectorAll(".table-responsive1 tbody tr[id]");
+    const rows = [...document.querySelectorAll(".table-responsive1 tbody tr[id]")]
+        .filter(r => !r.dataset.albumCommentsLoaded);
 
-    for (const row of rows) {
-        if (row.dataset.albumCommentsLoaded) continue;
+    const jobs = rows.map(row => handleAlbumRow(row));
+    if (jobs.length) await Promise.allSettled(jobs);
+}
 
-        const slug = getAlbumSlug(row);
-        if (!slug) continue;
+async function handleAlbumRow(row) {
+    const slug = getAlbumSlug(row);
+    if (!slug) return;
 
-        row.dataset.albumCommentsLoaded = "loading";
+    row.dataset.albumCommentsLoaded = "loading";
 
-        try {
-            const comments = await fetchAlbumComments(slug);
-            renderCommentsRow(row, comments, false);
-            row.dataset.albumCommentsLoaded = "1";
-        } catch (e) {
-            renderCommentsRow(row, [{ author:"Ошибка", text:e.message, time:"" }], false);
-            row.dataset.albumCommentsLoaded = "error";
-            setTimeout(() => {
-                delete row.dataset.albumCommentsLoaded;
-                processAlbumRows();
-            }, 2000);
-        }
+    try {
+        const comments = await fetchAlbumComments(slug);
+        renderCommentsRow(row, comments, false);
+        row.dataset.albumCommentsLoaded = "1";
+    } catch (e) {
+        renderCommentsRow(row, [{ author:"Ошибка", text:e.message, time:"" }], false);
+        row.dataset.albumCommentsLoaded = "error";
+        setTimeout(() => {
+            delete row.dataset.albumCommentsLoaded;
+            processAlbumRows();
+        }, 2000);
     }
 }
 
