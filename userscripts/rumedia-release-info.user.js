@@ -1,11 +1,12 @@
 // ==UserScript==
 // @name         RuMedia Release Details Helper
 // @namespace    https://rumedia.io/
-// @version      1.7.0
+// @version      1.8.0
 // @description  Подробности релиза + комменты + Мат + увеличение обложек по клику прямо в очереди модерации на RuMedia.io.
 // @author       Ruslan
 // @match        https://rumedia.io/media/admin-cp/manage-songs?check*
 // @match        https://rumedia.io/media/admin-cp/manage-albums?check*
+// @match        https://rumedia.io/media/edit-album/*
 // @grant        none
 // ==/UserScript==
 
@@ -27,7 +28,8 @@
         const parser = new DOMParser();
         const doc = parser.parseFromString(htmlText, 'text/html');
 
-        const producer = doc.querySelector('input#producer')?.value?.trim() || '—';
+        const author = doc.querySelector('input#author, input[name="author"]')?.value?.trim() || '—';
+        const producer = doc.querySelector('input#producer, input[name="producer"]')?.value?.trim() || '—';
         const vocal = doc.querySelector('select#vocal option:checked')?.textContent?.trim() || '—';
 
         // === AGE / Мат ===
@@ -38,7 +40,7 @@
             age = (val === '1') ? '18+' : '0+';
         }
 
-        return { producer, vocal, age };
+        return { author, producer, vocal, age };
     }
 
     function pluralize(value, forms) {
@@ -156,8 +158,9 @@
     function buildHtml(details) {
         return `
             <div class="release-inline-details" style="margin-top:10px; padding:8px; background:#f5f5f5; border-radius:6px;">
-                <div style="margin:2px 0;"><strong>Автор инструментала:</strong> ${details.producer}</div>
                 <div style="margin:2px 0;"><strong>Вокал:</strong> ${details.vocal}</div>
+                <div style="margin:2px 0;"><strong>Автор:</strong> ${details.author}</div>
+                <div style="margin:2px 0;"><strong>Автор инструментала:</strong> ${details.producer}</div>
 
                 <div style="margin:2px 0;">
                     <strong>Мат:</strong>
@@ -255,7 +258,7 @@
             renderComments(row, comments);
             form.dataset.detailsLoaded = '1';
         } catch (error) {
-            renderDetails(row, { producer: error.message, vocal: '—', age: '—' });
+            renderDetails(row, { author: '—', producer: error.message, vocal: '—', age: '—' });
         }
     }
 
@@ -298,6 +301,59 @@
         });
     }
 
+    function extractAudioIdFromSongBlock(block) {
+        const link = block.querySelector('a[data-load^="edit-track/"], a[href*="/edit-track/"]');
+        const href = link?.getAttribute('data-load') || link?.getAttribute('href') || '';
+        const match = href.match(/edit-track\/([^/?#]+)/i);
+        return match?.[1] || null;
+    }
+
+    function renderAlbumSongDetails(block, details) {
+        const infoContainer = block.querySelector('p');
+        if (!infoContainer) return;
+
+        const anchor = Array.from(infoContainer.querySelectorAll('span, div'))
+            .find((el) => el.textContent?.trim().startsWith('Вокал'));
+
+        const wrapper = document.createElement('div');
+        wrapper.className = 'album-song-extra-details';
+        wrapper.style = 'font-size:12px; margin-top:4px; line-height:1.4;';
+        wrapper.innerHTML = `
+            <div><strong>Автор:</strong> ${details.author}</div>
+            <div><strong>Автор инструментала:</strong> ${details.producer}</div>
+        `;
+
+        if (anchor) {
+            anchor.insertAdjacentElement('afterend', wrapper);
+        } else {
+            infoContainer.appendChild(wrapper);
+        }
+    }
+
+    function processAlbumEditPage() {
+        if (!location.pathname.includes('/edit-album/')) return;
+
+        const blocks = document.querySelectorAll('#songs .uploaded_albm_slist');
+
+        blocks.forEach((block) => {
+            if (block.dataset.extraDetailsLoaded) return;
+            const audioId = extractAudioIdFromSongBlock(block);
+            if (!audioId) return;
+
+            block.dataset.extraDetailsLoaded = 'loading';
+
+            fetchDetails(audioId)
+                .then((details) => {
+                    renderAlbumSongDetails(block, details);
+                    block.dataset.extraDetailsLoaded = '1';
+                })
+                .catch((error) => {
+                    renderAlbumSongDetails(block, { author: 'Ошибка', producer: error.message });
+                    block.dataset.extraDetailsLoaded = '1';
+                });
+        });
+    }
+
     function observeTable() {
         const table = document.querySelector('.table-responsive1, table.table');
         if (!table) return;
@@ -308,6 +364,19 @@
         });
 
         observer.observe(table, { childList: true, subtree: true });
+    }
+
+    function observeAlbumEditPage() {
+        if (!location.pathname.includes('/edit-album/')) return;
+
+        const songsRoot = document.querySelector('#songs');
+        if (!songsRoot) return;
+
+        const observer = new MutationObserver(() => {
+            processAlbumEditPage();
+        });
+
+        observer.observe(songsRoot, { childList: true, subtree: true });
     }
 
     function ready(callback) {
@@ -384,7 +453,9 @@
     ready(() => {
         processForms();
         processAlbumRows();
+        processAlbumEditPage();
         observeTable();
+        observeAlbumEditPage();
         enableCoverZoom();
     });
 
