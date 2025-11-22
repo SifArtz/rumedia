@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         RuMedia Helper — Details, Comments, Zoom, Album Authors (v2.4)
+// @name         RuMedia Helper — Details, Comments, Zoom, Album Authors (v2.5)
 // @namespace    https://rumedia.io/
-// @version      2.4
+// @version      2.5
 // @description  Подробности треков, комментарии, мат, zoom обложек и авторы в edit-album + комментарии альбома восстановлены.
 // @author       Ruslan
 // @match        https://rumedia.io/media/admin-cp/manage-songs?check*
@@ -16,6 +16,7 @@
 const STATE = {
     cache: new Map(),
     commentsCache: new Map(),
+    authorsCache: new Map(),
 };
 
 const MODERATOR_NAMES = {
@@ -339,16 +340,21 @@ function enableCoverZoom() {
 ======================================================================== */
 
 async function fetchTrackAuthors(id) {
+    if (STATE.authorsCache.has(id)) return STATE.authorsCache.get(id);
+
     const r = await fetchWithTimeout(`https://rumedia.io/media/edit-track/${id}`, { credentials:"include" });
     if (!r.ok) return null;
 
     const html = await r.text();
     const doc = new DOMParser().parseFromString(html, "text/html");
 
-    return {
+    const data = {
         written: doc.querySelector("#written")?.value?.trim() || "—",
         producer: doc.querySelector("#producer")?.value?.trim() || "—"
     };
+
+    STATE.authorsCache.set(id, data);
+    return data;
 }
 
 function extractTrackId(link) {
@@ -392,6 +398,13 @@ async function enhanceAlbumEditor() {
     }
 }
 
+function observeAlbumEditor() {
+    if (!location.pathname.includes("/edit-album/")) return;
+
+    const songsRoot = document.querySelector("#songs") || document.body;
+    new MutationObserver(() => enhanceAlbumEditor()).observe(songsRoot, { childList:true, subtree:true });
+}
+
 /* ========================================================================
    INIT
 ======================================================================== */
@@ -417,6 +430,7 @@ ready(() => {
     processAlbumRows();
     enhanceAlbumEditor();
     observeTable();
+    observeAlbumEditor();
     enableCoverZoom();
 });
 
