@@ -1,11 +1,12 @@
 // ==UserScript==
-// @name         RuMedia Release Details Helper
+// @name         RuMedia Helper — Details, Comments, Age, Covers Zoom, Album Authors
 // @namespace    https://rumedia.io/
-// @version      1.7.0
-// @description  Подробности релиза + комменты + Мат + увеличение обложек по клику прямо в очереди модерации на RuMedia.io.
+// @version      2.0
+// @description  Подробности треков, комментарии, мат, увеличение обложек и авто-подгрузка Автор/Автор инструментала в альбомах.
 // @author       Ruslan
 // @match        https://rumedia.io/media/admin-cp/manage-songs?check*
 // @match        https://rumedia.io/media/admin-cp/manage-albums?check*
+// @match        https://rumedia.io/media/edit-album/*
 // @grant        none
 // ==/UserScript==
 
@@ -23,6 +24,10 @@
         moderator: 'Илья',
     };
 
+    /* ========================================================================
+       ПОЛУЧЕНИЕ ДЕТАЛЕЙ ТРЕКА (Автор инструментала, вокал, мат)
+    ======================================================================== */
+
     function parseDetails(htmlText) {
         const parser = new DOMParser();
         const doc = parser.parseFromString(htmlText, 'text/html');
@@ -30,16 +35,17 @@
         const producer = doc.querySelector('input#producer')?.value?.trim() || '—';
         const vocal = doc.querySelector('select#vocal option:checked')?.textContent?.trim() || '—';
 
-        // === AGE / Мат ===
+        // age_restriction
         let age = '—';
         const ageSelect = doc.querySelector('select#age_restriction');
-        if (ageSelect) {
-            const val = ageSelect.value.trim();
-            age = (val === '1') ? '18+' : '0+';
-        }
+        if (ageSelect) age = ageSelect.value === '1' ? '18+' : '0+';
 
         return { producer, vocal, age };
     }
+
+    /* ========================================================================
+       ВСПОМОГАТЕЛЬНЫЕ Ф-ИИ ДАТЫ/ВРЕМЕНИ
+    ======================================================================== */
 
     function pluralize(value, forms) {
         const abs = Math.abs(value) % 100;
@@ -51,74 +57,80 @@
     }
 
     function formatDateTime(timestampMs) {
-        const date = new Date(timestampMs);
+        const d = new Date(timestampMs);
         const pad = (n) => String(n).padStart(2, '0');
-        return `${pad(date.getDate())}.${pad(date.getMonth() + 1)}.${date.getFullYear()} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+        return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
     }
 
-    function formatRelative(timestampMs) {
-        const diffSec = Math.max(0, Math.round((Date.now() - timestampMs) / 1000));
+    function formatRelative(ts) {
+        const diffSec = Math.max(0, Math.round((Date.now() - ts) / 1000));
+
         if (diffSec < 60) return 'меньше минуты назад';
-
-        const minutes = Math.round(diffSec / 60);
-        if (minutes < 60) return `${minutes} ${pluralize(minutes, ['минута', 'минуты', 'минут'])} назад`;
-
-        const hours = Math.round(diffSec / 3600);
-        if (hours < 24) return `${hours} ${pluralize(hours, ['час', 'часа', 'часов'])} назад`;
-
-        const days = Math.round(diffSec / 86400);
-        return `${days} ${pluralize(days, ['день', 'дня', 'дней'])} назад`;
+        const min = Math.round(diffSec / 60);
+        if (min < 60) return `${min} ${pluralize(min, ['минута', 'минуты', 'минут'])} назад`;
+        const h = Math.round(diffSec / 3600);
+        if (h < 24) return `${h} ${pluralize(h, ['час', 'часа', 'часов'])} назад`;
+        const d = Math.round(diffSec / 86400);
+        return `${d} ${pluralize(d, ['день', 'дня', 'дней'])} назад`;
     }
 
-    function formatTimestamp(rawTimestamp, fallbackText) {
-        const tryParse = (value) => {
-            const num = Number(value);
-            return Number.isFinite(num) ? num : null;
+    function formatTimestamp(raw, fb) {
+        const tryNum = (v) => {
+            const n = Number(v);
+            return Number.isFinite(n) ? n : null;
         };
+        const parsed = tryNum(raw) ?? tryNum(fb);
+        if (parsed === null) return fb || '';
 
-        const parsed = tryParse(rawTimestamp) ?? tryParse(fallbackText);
-        if (parsed === null) return fallbackText || '';
-
-        const timestampMs = parsed * 1000;
-        return `${formatRelative(timestampMs)} (${formatDateTime(timestampMs)})`;
+        const ts = parsed * 1000;
+        return `${formatRelative(ts)} (${formatDateTime(ts)})`;
     }
+
+    /* ========================================================================
+       ПАРСИНГ КОММЕНТАРИЕВ
+    ======================================================================== */
 
     function getLoginFromLink(link) {
         if (!link) return '';
         const href = link.getAttribute('href') || '';
-        const match = href.match(/\/(?:media|profile)\/([^/?#]+)/i);
-        return match?.[1] || link.textContent?.trim() || '';
+        const m = href.match(/\/(?:media|profile)\/([^/?#]+)/i);
+        return m?.[1] || link.textContent?.trim() || '';
     }
 
     function parseComments(htmlText) {
         const parser = new DOMParser();
         const doc = parser.parseFromString(htmlText, 'text/html');
+
         const items = doc.querySelectorAll('.comment_list li.comment_item');
 
         return Array.from(items)
-            .map((item) => {
-                const userLink = item.querySelector('.comment_username a');
-                const login = getLoginFromLink(userLink) || 'Неизвестно';
-                const author = MODERATOR_NAMES[login] || login;
-                const text = item.querySelector('.comment_body')?.textContent?.trim() || '';
-                const timeEl = item.querySelector('.comment_published .ajax-time');
-                const timeRaw = timeEl?.getAttribute('title');
-                const timeFallback = timeEl?.textContent?.trim() || '';
-                const time = formatTimestamp(timeRaw, timeFallback);
+            .map((it) => {
+                const userLink = it.querySelector('.comment_username a');
+                const login = getLoginFromLink(userLink);
+                const author = MODERATOR_NAMES[login] || login || 'Неизвестно';
+                const text = it.querySelector('.comment_body')?.textContent?.trim() || '';
+
+                const timeEl = it.querySelector('.comment_published .ajax-time');
+                const raw = timeEl?.getAttribute('title');
+                const fb = timeEl?.textContent?.trim() || '';
+                const time = formatTimestamp(raw, fb);
+
                 return { author, text, time };
             })
             .filter((c) => c.text);
     }
 
+    /* ========================================================================
+       AJAX: DETAILS & COMMENTS
+    ======================================================================== */
+
     async function fetchDetails(audioId) {
         if (STATE.cache.has(audioId)) return STATE.cache.get(audioId);
 
         const url = `https://rumedia.io/media/edit-track/${audioId}`;
-        const response = await fetch(url, { credentials: 'include' });
-
-        if (!response.ok) throw new Error(`Не удалось получить данные (${response.status})`);
-
-        const text = await response.text();
+        const r = await fetch(url, { credentials: 'include' });
+        if (!r.ok) throw new Error(`Ошибка ${r.status}`);
+        const text = await r.text();
         const details = parseDetails(text);
         STATE.cache.set(audioId, details);
         return details;
@@ -128,121 +140,115 @@
         if (STATE.commentsCache.has(audioId)) return STATE.commentsCache.get(audioId);
 
         const url = `https://rumedia.io/media/track/${audioId}`;
-        const response = await fetch(url, { credentials: 'include' });
-
-        if (!response.ok) throw new Error(`Не удалось получить комментарии (${response.status})`);
-
-        const text = await response.text();
+        const r = await fetch(url, { credentials: 'include' });
+        if (!r.ok) throw new Error(`Ошибка ${r.status}`);
+        const text = await r.text();
         const comments = parseComments(text);
+
         STATE.commentsCache.set(audioId, comments);
         return comments;
     }
 
-    async function fetchAlbumComments(albumSlug) {
-        const cacheKey = `album:${albumSlug}`;
-        if (STATE.commentsCache.has(cacheKey)) return STATE.commentsCache.get(cacheKey);
+    async function fetchAlbumComments(slug) {
+        const key = `album:${slug}`;
+        if (STATE.commentsCache.has(key)) return STATE.commentsCache.get(key);
 
-        const url = `https://rumedia.io/media/album/${albumSlug}`;
-        const response = await fetch(url, { credentials: 'include' });
-
-        if (!response.ok) throw new Error(`Не удалось получить комментарии (${response.status})`);
-
-        const text = await response.text();
+        const url = `https://rumedia.io/media/album/${slug}`;
+        const r = await fetch(url, { credentials: 'include' });
+        if (!r.ok) throw new Error(`Ошибка ${r.status}`);
+        const text = await r.text();
         const comments = parseComments(text);
-        STATE.commentsCache.set(cacheKey, comments);
+
+        STATE.commentsCache.set(key, comments);
         return comments;
     }
 
+    /* ========================================================================
+       HTML ВСТАВКИ
+    ======================================================================== */
+
     function buildHtml(details) {
         return `
-            <div class="release-inline-details" style="margin-top:10px; padding:8px; background:#f5f5f5; border-radius:6px;">
-                <div style="margin:2px 0;"><strong>Автор инструментала:</strong> ${details.producer}</div>
-                <div style="margin:2px 0;"><strong>Вокал:</strong> ${details.vocal}</div>
-
-                <div style="margin:2px 0;">
-                    <strong>Мат:</strong>
-                    ${
-                        details.age === '18+'
-                            ? '<span style="color:red; font-weight:bold;">Есть</span>'
-                            : '<span>Нет</span>'
-                    }
-                </div>
-            </div>
-        `;
+        <div class="release-inline-details"
+             style="margin-top:10px; padding:8px; background:#f5f5f5; border-radius:6px;">
+            <div><strong>Автор инструментала:</strong> ${details.producer}</div>
+            <div><strong>Вокал:</strong> ${details.vocal}</div>
+            <div><strong>Мат:</strong> ${
+                details.age === '18+'
+                ? '<span style="color:red;font-weight:bold;">Есть</span>'
+                : 'Нет'
+            }</div>
+        </div>`;
     }
 
     function buildCommentsHtml(comments) {
-        if (!comments || comments.length === 0) {
-            return '<div class="release-inline-comments"><h4 style="margin:0 0 6px 0;">Комментарии</h4><p style="margin:2px 0;">Комментариев нет.</p></div>';
-        }
+        if (!comments.length)
+            return `<div class="release-inline-comments">
+                        <h4 style="margin:0 0 6px 0;">Комментарии</h4>
+                        <p>Комментариев нет.</p>
+                    </div>`;
 
-        const items = comments
-            .map((c) => {
-                const when = c.time ? `<div style="color:#555; font-size:12px; margin-top:2px;">${c.time}</div>` : '';
-                return `<li style="margin-bottom:8px; line-height:1.4;"><strong>${c.author}:</strong> <span>${c.text}</span>${when}</li>`;
-            })
-            .join('');
+        const items = comments.map((c) => `
+            <li style="margin-bottom:8px;">
+                <strong>${c.author}:</strong> ${c.text}
+                <div style="font-size:12px;color:#555;">${c.time}</div>
+            </li>
+        `).join('');
 
         return `
             <div class="release-inline-comments">
                 <h4 style="margin:0 0 6px 0;">Комментарии</h4>
-                <ul style="padding-left:18px; margin:0;">${items}</ul>
+                <ul style="padding-left:18px;margin:0;">${items}</ul>
             </div>
         `;
     }
 
+    /* ========================================================================
+       ВСТАВКА ПОДРОБНОСТЕЙ И КОММЕНТОВ В ТАБЛИЦУ
+    ======================================================================== */
+
     function findRecognitionRow(row) {
-        let pointer = row.nextElementSibling;
-        while (pointer) {
-            const firstCellText = pointer.querySelector('td')?.textContent?.trim();
-            if (firstCellText && firstCellText.startsWith('Распознание')) return pointer;
-            const hasForm = pointer.querySelector('form input[name="audio_id"]');
-            if (hasForm) break;
-            pointer = pointer.nextElementSibling;
+        let p = row.nextElementSibling;
+        while (p) {
+            const t = p.querySelector('td')?.textContent || '';
+            if (t.trim().startsWith('Распознание')) return p;
+            if (p.querySelector('form input[name="audio_id"]')) break;
+            p = p.nextElementSibling;
         }
         return null;
     }
 
-    function getAlbumSlug(row) {
-        const link = row.querySelector('a[href*="/album/"]');
-        const href = link?.getAttribute('href') || '';
-        const match = href.match(/\/album\/([^/?#]+)/i);
-        return match?.[1] || null;
-    }
-
     function renderDetails(row, details) {
-        const infoCell = row.querySelector('td:nth-child(4)');
-        if (!infoCell) return;
+        const cell = row.querySelector('td:nth-child(4)');
+        if (!cell) return;
 
-        const existing = infoCell.querySelector('.release-inline-details');
-        const wrapper = document.createElement('div');
-        wrapper.innerHTML = buildHtml(details);
-        const content = wrapper.firstElementChild;
+        const wrap = document.createElement('div');
+        wrap.innerHTML = buildHtml(details);
 
-        if (existing) existing.replaceWith(content);
-        else infoCell.appendChild(content);
+        const existing = cell.querySelector('.release-inline-details');
+        if (existing) existing.replaceWith(wrap.firstElementChild);
+        else cell.appendChild(wrap.firstElementChild);
     }
 
-    function renderComments(row, comments, useRecognitionRow = true) {
-        const recognitionRow = useRecognitionRow ? findRecognitionRow(row) || row : row;
-        const commentsRow = document.createElement('tr');
-        const columnsCount = row.children.length || 1;
+    function renderComments(row, comments, useRecognition = true) {
+        const baseRow = useRecognition ? (findRecognitionRow(row) || row) : row;
 
-        const commentsCell = document.createElement('td');
-        commentsCell.colSpan = columnsCount;
-        commentsCell.style.background = '#fbfbfb';
-        commentsCell.style.borderTop = '1px solid #e0e0e0';
-        commentsCell.innerHTML = buildCommentsHtml(comments);
+        const tr = document.createElement('tr');
+        tr.className = 'release-comments-row';
 
-        commentsRow.className = 'release-comments-row';
-        commentsRow.appendChild(commentsCell);
+        const td = document.createElement('td');
+        td.colSpan = row.children.length;
+        td.style.background = '#fbfbfb';
+        td.style.borderTop = '1px solid #e0e0e0';
+        td.innerHTML = buildCommentsHtml(comments);
 
-        const existing = recognitionRow.nextElementSibling;
-        if (existing && existing.classList.contains('release-comments-row')) {
-            existing.replaceWith(commentsRow);
-        } else {
-            recognitionRow.insertAdjacentElement('afterend', commentsRow);
-        }
+        tr.appendChild(td);
+
+        const next = baseRow.nextElementSibling;
+        if (next && next.classList.contains('release-comments-row'))
+            next.replaceWith(tr);
+        else
+            baseRow.insertAdjacentElement('afterend', tr);
     }
 
     async function renderReleaseInfo(form, audioId) {
@@ -250,75 +256,74 @@
         if (!row) return;
 
         try {
-            const [details, comments] = await Promise.all([fetchDetails(audioId), fetchComments(audioId)]);
+            const [details, comments] = await Promise.all([
+                fetchDetails(audioId),
+                fetchComments(audioId)
+            ]);
+
             renderDetails(row, details);
             renderComments(row, comments);
+
             form.dataset.detailsLoaded = '1';
-        } catch (error) {
-            renderDetails(row, { producer: error.message, vocal: '—', age: '—' });
+        } catch (e) {
+            renderDetails(row, { producer: e.message, vocal: '—', age: '—' });
         }
     }
 
     function processForms() {
-        const forms = Array.from(document.querySelectorAll('form')).filter((form) =>
-            form.querySelector('input[name="audio_id"]') && form.querySelector('input[name="add_queue"]')
-        );
+        const forms = [...document.querySelectorAll('form')]
+            .filter(f => f.querySelector('input[name="audio_id"]') &&
+                         f.querySelector('input[name="add_queue"]'));
 
-        forms.forEach((form) => {
-            if (form.dataset.detailsLoaded) return;
-            const audioInput = form.querySelector('input[name="audio_id"]');
-            if (!audioInput?.value) return;
+        for (const form of forms) {
+            if (form.dataset.detailsLoaded) continue;
+
+            const id = form.querySelector('input[name="audio_id"]')?.value;
+            if (!id) continue;
 
             form.dataset.detailsLoaded = 'loading';
-            renderReleaseInfo(form, audioInput.value);
-        });
+            renderReleaseInfo(form, id);
+        }
+    }
+
+    /* ========================================================================
+       ОБРАБОТКА АЛЬБОМОВ В ОЧЕРЕДИ МОДЕРАЦИИ
+    ======================================================================== */
+
+    function getAlbumSlug(row) {
+        const a = row.querySelector("a[href*='/album/']");
+        const href = a?.getAttribute('href') || '';
+        const m = href.match(/\/album\/([^/?#]+)/);
+        return m?.[1] || null;
     }
 
     function processAlbumRows() {
         if (!location.pathname.includes('/admin-cp/manage-albums')) return;
 
-        const rows = Array.from(document.querySelectorAll('.table-responsive1 tbody tr[id]'));
+        const rows = document.querySelectorAll('.table-responsive1 tbody tr[id]');
 
-        rows.forEach((row) => {
-            if (row.dataset.albumCommentsLoaded) return;
+        for (const row of rows) {
+            if (row.dataset.albumCommentsLoaded) continue;
 
-            const albumSlug = getAlbumSlug(row);
-            if (!albumSlug) return;
+            const slug = getAlbumSlug(row);
+            if (!slug) continue;
 
             row.dataset.albumCommentsLoaded = 'loading';
 
-            fetchAlbumComments(albumSlug)
-                .then((comments) => {
-                    renderComments(row, comments, false);
+            fetchAlbumComments(slug)
+                .then(c => {
+                    renderComments(row, c, false);
                     row.dataset.albumCommentsLoaded = '1';
                 })
-                .catch((error) => {
-                    renderComments(row, [{ author: 'Ошибка', text: error.message, time: '' }], false);
+                .catch(e => {
+                    renderComments(row, [{ author: 'Ошибка', text: e.message, time: '' }], false);
                 });
-        });
+        }
     }
 
-    function observeTable() {
-        const table = document.querySelector('.table-responsive1, table.table');
-        if (!table) return;
-
-        const observer = new MutationObserver(() => {
-            processForms();
-            processAlbumRows();
-        });
-
-        observer.observe(table, { childList: true, subtree: true });
-    }
-
-    function ready(callback) {
-        if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', callback);
-        } else callback();
-    }
-
-    // =====================================================
-    //              УВЕЛИЧЕНИЕ ОБЛОЖЕК ПО КЛИКУ
-    // =====================================================
+    /* ========================================================================
+       УВЕЛИЧЕНИЕ ОБЛОЖЕК (ZOOM)
+    ======================================================================== */
 
     function enableCoverZoom() {
         const overlay = document.createElement('div');
@@ -339,53 +344,125 @@
         img.style = `
             max-width: 90%;
             max-height: 90%;
-            border-radius: 8px;
+            border-radius: 10px;
             box-shadow: 0 0 20px rgba(0,0,0,0.5);
         `;
 
         overlay.appendChild(img);
         document.body.appendChild(overlay);
 
-        overlay.addEventListener('click', () => {
-            overlay.style.display = 'none';
-        });
-
-        document.addEventListener('keydown', (e) => {
+        overlay.addEventListener('click', () => overlay.style.display = 'none');
+        document.addEventListener('keydown', e => {
             if (e.key === 'Escape') overlay.style.display = 'none';
         });
 
-        function bindCovers() {
-            const covers = document.querySelectorAll('img');
+        function bind() {
+            const imgs = document.querySelectorAll('img');
 
-            covers.forEach((imgEl) => {
-                if (imgEl.dataset.zoomBound) return;
-                imgEl.dataset.zoomBound = '1';
+            imgs.forEach((im) => {
+                if (im.dataset.zoomBound) return;
+                im.dataset.zoomBound = '1';
 
-                imgEl.style.cursor = 'zoom-in';
+                im.style.cursor = 'zoom-in';
 
-                imgEl.addEventListener('click', () => {
-                    const src = imgEl.src || imgEl.getAttribute('data-src');
+                im.addEventListener('click', () => {
+                    const src = im.src || im.dataset.src;
                     if (!src) return;
-
                     img.src = src;
                     overlay.style.display = 'flex';
                 });
             });
         }
 
-        bindCovers();
+        bind();
 
-        const obs = new MutationObserver(bindCovers);
+        const obs = new MutationObserver(bind);
         obs.observe(document.body, { childList: true, subtree: true });
     }
 
-    // =====================================================
+    /* ========================================================================
+       ДОБАВЛЕНИЕ "Автор" / "Автор инструментала" В РЕДАКТОРЕ АЛЬБОМА
+    ======================================================================== */
+
+    async function fetchTrackAuthors(trackId) {
+        const url = `https://rumedia.io/media/edit-track/${trackId}`;
+        const r = await fetch(url, { credentials: "include" });
+        if (!r.ok) return null;
+
+        const html = await r.text();
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(html, "text/html");
+
+        const written = doc.querySelector("input#written")?.value?.trim() || "—";
+        const producer = doc.querySelector("input#producer")?.value?.trim() || "—";
+
+        return { written, producer };
+    }
+
+    function getTrackIdFromLink(a) {
+        const href = a?.getAttribute("href");
+        if (!href) return null;
+        const m = href.match(/edit-track\/([A-Za-z0-9]+)/);
+        return m?.[1] || null;
+    }
+
+    async function enhanceAlbumEditor() {
+        if (!location.pathname.includes("/media/edit-album/")) return;
+
+        const blocks = document.querySelectorAll(".uploaded_albm_slist");
+
+        for (const block of blocks) {
+            if (block.dataset.authorEnhanced) continue;
+
+            const link = block.querySelector("a[data-load], a[href*='edit-track']");
+            const trackId = getTrackIdFromLink(link);
+            if (!trackId) continue;
+
+            block.dataset.authorEnhanced = "1";
+
+            const info = await fetchTrackAuthors(trackId);
+            if (!info) continue;
+
+            const p = block.querySelector("p");
+            const vocalSpan = p?.querySelector("span[style*='font-size']");
+            if (!vocalSpan) continue;
+
+            const wrap = document.createElement("div");
+            wrap.innerHTML = `
+                <span style="font-size:12px;">
+                    Автор: <b>${info.written}</b> |
+                    Автор инструментала: <b>${info.producer}</b>
+                </span>
+                <br>
+            `;
+
+            vocalSpan.insertAdjacentElement("afterend", wrap);
+        }
+    }
+
+    /* ========================================================================
+       ИНИЦИАЛИЗАЦИЯ
+    ======================================================================== */
+
+    function ready(fn) {
+        if (document.readyState === "loading")
+            document.addEventListener("DOMContentLoaded", fn);
+        else fn();
+    }
 
     ready(() => {
         processForms();
         processAlbumRows();
         observeTable();
         enableCoverZoom();
+        enhanceAlbumEditor();
+
+        const obs = new MutationObserver(() => {
+            processForms();
+            processAlbumRows();
+            enhanceAlbumEditor();
+        });
+        obs.observe(document.body, { childList: true, subtree: true });
     });
 
 })();
