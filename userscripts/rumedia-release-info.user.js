@@ -1,437 +1,391 @@
 // ==UserScript==
-// @name         RuMedia Helper — Details, Comments, Zoom, Album Authors (v2.5)
+// @name         RuMedia Release Details Helper
 // @namespace    https://rumedia.io/
-// @version      2.5
-// @description  Подробности треков, комментарии, мат, zoom обложек и авторы в edit-album + комментарии альбома восстановлены.
+// @version      1.7.0
+// @description  Подробности релиза + комменты + Мат + увеличение обложек по клику прямо в очереди модерации на RuMedia.io.
 // @author       Ruslan
 // @match        https://rumedia.io/media/admin-cp/manage-songs?check*
 // @match        https://rumedia.io/media/admin-cp/manage-albums?check*
-// @match        https://rumedia.io/media/edit-album/*
 // @grant        none
 // ==/UserScript==
 
 (function () {
-'use strict';
+    'use strict';
 
-const STATE = {
-    cache: new Map(),
-    commentsCache: new Map(),
-    authorsCache: new Map(),
-};
+    const STATE = {
+        cache: new Map(),
+        commentsCache: new Map(),
+    };
 
-const MODERATOR_NAMES = {
-    moderator3: 'Руслан',
-    moderator7: 'Матвей',
-    moderator: 'Илья',
-};
+    const MODERATOR_NAMES = {
+        moderator3: 'Руслан',
+        moderator7: 'Матвей',
+        moderator: 'Илья',
+    };
 
-const NORMALIZED_MODERATOR_NAMES = Object.fromEntries(
-    Object.entries(MODERATOR_NAMES).map(([k, v]) => [normalizeLogin(k), v])
-);
+    function parseDetails(htmlText) {
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(htmlText, 'text/html');
 
-function normalizeLogin(login) {
-    return login.trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
-}
+        const producer = doc.querySelector('input#producer')?.value?.trim() || '—';
+        const vocal = doc.querySelector('select#vocal option:checked')?.textContent?.trim() || '—';
 
-function resolveModeratorName(login) {
-    const normalized = normalizeLogin(login);
-    return NORMALIZED_MODERATOR_NAMES[normalized] || MODERATOR_NAMES[normalized] || MODERATOR_NAMES[login] || login;
-}
+        // === AGE / Мат ===
+        let age = '—';
+        const ageSelect = doc.querySelector('select#age_restriction');
+        if (ageSelect) {
+            const val = ageSelect.value.trim();
+            age = (val === '1') ? '18+' : '0+';
+        }
 
-/* ========================================================================
-   PARSE DETAILS
-======================================================================== */
-
-function parseDetails(html) {
-    const doc = new DOMParser().parseFromString(html, 'text/html');
-
-    const producer = doc.querySelector('#producer')?.value?.trim() || '—';
-    const vocal = doc.querySelector('#vocal option:checked')?.textContent?.trim() || '—';
-
-    let age = '—';
-    const ageSel = doc.querySelector('#age_restriction');
-    if (ageSel) age = ageSel.value === "1" ? "18+" : "0+";
-
-    return { producer, vocal, age };
-}
-
-/* ========================================================================
-   PARSE COMMENTS
-======================================================================== */
-
-function parseComments(html) {
-    const doc = new DOMParser().parseFromString(html, 'text/html');
-    const items = doc.querySelectorAll('.comment_item');
-
-    return [...items].map(i => {
-        const login = i.querySelector('.comment_username a')?.textContent?.trim() || 'Неизвестно';
-        const author = resolveModeratorName(login);
-
-        const text = i.querySelector('.comment_body')?.textContent?.trim() || '';
-
-        const t = i.querySelector('.ajax-time');
-        const raw = t?.getAttribute('title');
-        const fb = t?.textContent?.trim() || '';
-
-        let time = fb;
-        const num = Number(raw) || Number(fb);
-        if (num) time = new Date(num * 1000).toLocaleString();
-
-        return { author, text, time };
-    }).filter(x => x.text);
-}
-
-/* ========================================================================
-   FETCH
-======================================================================== */
-
-function fetchWithTimeout(url, opts = {}, timeout = 10000) {
-    const controller = new AbortController();
-    const t = setTimeout(() => controller.abort(), timeout);
-    const options = { ...opts, signal: controller.signal };
-
-    return fetch(url, options).finally(() => clearTimeout(t));
-}
-
-async function fetchDetails(id) {
-    if (STATE.cache.has(id)) return STATE.cache.get(id);
-
-    const r = await fetchWithTimeout(`https://rumedia.io/media/edit-track/${id}`, { credentials:"include" });
-    if (!r.ok) throw new Error("Ошибка " + r.status);
-
-    const html = await r.text();
-    const data = parseDetails(html);
-    STATE.cache.set(id, data);
-    return data;
-}
-
-async function fetchCommentsTrack(id) {
-    if (STATE.commentsCache.has(id)) return STATE.commentsCache.get(id);
-
-    const r = await fetchWithTimeout(`https://rumedia.io/media/track/${id}`, { credentials:"include" });
-    if (!r.ok) throw new Error("Ошибка " + r.status);
-
-    const html = await r.text();
-    const data = parseComments(html);
-    STATE.commentsCache.set(id, data);
-    return data;
-}
-
-async function fetchAlbumComments(slug) {
-    const key = "album:" + slug;
-    if (STATE.commentsCache.has(key)) return STATE.commentsCache.get(key);
-
-    const r = await fetchWithTimeout(`https://rumedia.io/media/album/${slug}`, { credentials:"include" });
-    if (!r.ok) throw new Error("Ошибка " + r.status);
-
-    const html = await r.text();
-    const data = parseComments(html);
-    STATE.commentsCache.set(key, data);
-    return data;
-}
-
-/* ========================================================================
-   HTML TEMPLATES
-======================================================================== */
-
-function buildDetails(details) {
-    return `
-        <div class="release-inline-details"
-             style="margin-top:10px;padding:8px;background:#f5f5f5;border-radius:6px;">
-            <div><b>Автор инструментала:</b> ${details.producer}</div>
-            <div><b>Вокал:</b> ${details.vocal}</div>
-            <div><b>Мат:</b> ${
-                details.age === '18+'
-                ? '<span style="color:red;font-weight:bold;">Есть</span>'
-                : 'Нет'
-            }</div>
-        </div>
-    `;
-}
-
-function buildCommentsBlock(arr) {
-    if (!arr.length) return `<p style="margin:5px 0;">Комментариев нет.</p>`;
-
-    return `
-        <ul style="padding-left:18px;margin:0;">
-            ${arr.map(c => `
-                <li style="margin-bottom:6px;">
-                    <b>${c.author}:</b> ${c.text}
-                    <div style="font-size:12px;color:#555;">${c.time}</div>
-                </li>
-            `).join("")}
-        </ul>
-    `;
-}
-
-/* ========================================================================
-   RENDER DETAILS/COMMENTS (moderation)
-======================================================================== */
-
-function findRecognitionRow(row) {
-    let p = row.nextElementSibling;
-    while (p) {
-        const txt = p.querySelector("td")?.textContent?.trim() || "";
-        if (txt.startsWith("Распознание")) return p;
-        if (p.querySelector('input[name="audio_id"]')) break;
-        p = p.nextElementSibling;
+        return { producer, vocal, age };
     }
-    return null;
-}
 
-function renderDetailsRow(row, details) {
-    const cell = row.querySelector("td:nth-child(4)");
-    if (!cell) return;
-
-    const wrap = document.createElement("div");
-    wrap.innerHTML = buildDetails(details);
-
-    const old = cell.querySelector(".release-inline-details");
-    if (old) old.replaceWith(wrap.firstElementChild);
-    else cell.appendChild(wrap.firstElementChild);
-}
-
-function renderCommentsRow(row, comments, useRec = true) {
-    const base = useRec ? (findRecognitionRow(row) || row) : row;
-
-    const tr = document.createElement("tr");
-    tr.className = "release-comments-row";
-
-    const td = document.createElement("td");
-    td.colSpan = row.children.length;
-    td.style.background = "#fbfbfb";
-    td.style.borderTop = "1px solid #e0e0e0";
-    td.innerHTML = `
-        <div class="release-inline-comments">
-            <h4 style="margin:0 0 6px 0;">Комментарии</h4>
-            ${buildCommentsBlock(comments)}
-        </div>
-    `;
-
-    tr.appendChild(td);
-
-    const nxt = base.nextElementSibling;
-    if (nxt?.classList.contains("release-comments-row")) nxt.replaceWith(tr);
-    else base.insertAdjacentElement("afterend", tr);
-}
-
-async function renderTrackInfo(form, id) {
-    const row = form.closest("tr");
-    if (!row) return;
-
-    try {
-        const [details, comments] = await Promise.all([
-            fetchDetails(id),
-            fetchCommentsTrack(id)
-        ]);
-
-        renderDetailsRow(row, details);
-        renderCommentsRow(row, comments);
-
-        form.dataset.detailsLoaded = "1";
-    } catch (e) {
-        renderDetailsRow(row, { producer: e.message, vocal:"—", age:"—" });
-        form.dataset.detailsLoaded = "error";
-        setTimeout(() => {
-            delete form.dataset.detailsLoaded;
-            processForms();
-        }, 2000);
+    function pluralize(value, forms) {
+        const abs = Math.abs(value) % 100;
+        const last = abs % 10;
+        if (abs > 10 && abs < 20) return forms[2];
+        if (last > 1 && last < 5) return forms[1];
+        if (last === 1) return forms[0];
+        return forms[2];
     }
-}
 
-function processForms() {
-    const forms = [...document.querySelectorAll("form")]
-        .filter(f => f.querySelector('input[name="audio_id"]') &&
-                     f.querySelector('input[name="add_queue"]'));
-
-    for (const f of forms) {
-        if (f.dataset.detailsLoaded) continue;
-        const id = f.querySelector('input[name="audio_id"]')?.value;
-        if (!id) continue;
-        f.dataset.detailsLoaded = "loading";
-        renderTrackInfo(f, id);
+    function formatDateTime(timestampMs) {
+        const date = new Date(timestampMs);
+        const pad = (n) => String(n).padStart(2, '0');
+        return `${pad(date.getDate())}.${pad(date.getMonth() + 1)}.${date.getFullYear()} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
     }
-}
 
-/* ========================================================================
-   PROCESS ALBUM ROWS (restored)
-======================================================================== */
+    function formatRelative(timestampMs) {
+        const diffSec = Math.max(0, Math.round((Date.now() - timestampMs) / 1000));
+        if (diffSec < 60) return 'меньше минуты назад';
 
-function getAlbumSlug(row) {
-    const a = row.querySelector("a[href*='/album/']");
-    const href = a?.getAttribute("href") || "";
-    const m = href.match(/\/album\/([^/?#]+)/);
-    return m ? m[1] : null;
-}
+        const minutes = Math.round(diffSec / 60);
+        if (minutes < 60) return `${minutes} ${pluralize(minutes, ['минута', 'минуты', 'минут'])} назад`;
 
-async function processAlbumRows() {
-    if (!location.pathname.includes("/manage-albums")) return;
+        const hours = Math.round(diffSec / 3600);
+        if (hours < 24) return `${hours} ${pluralize(hours, ['час', 'часа', 'часов'])} назад`;
 
-    const rows = [...document.querySelectorAll(".table-responsive1 tbody tr[id]")]
-        .filter(r => !r.dataset.albumCommentsLoaded);
-
-    const jobs = rows.map(row => handleAlbumRow(row));
-    if (jobs.length) await Promise.allSettled(jobs);
-}
-
-async function handleAlbumRow(row) {
-    const slug = getAlbumSlug(row);
-    if (!slug) return;
-
-    row.dataset.albumCommentsLoaded = "loading";
-
-    try {
-        const comments = await fetchAlbumComments(slug);
-        renderCommentsRow(row, comments, false);
-        row.dataset.albumCommentsLoaded = "1";
-    } catch (e) {
-        renderCommentsRow(row, [{ author:"Ошибка", text:e.message, time:"" }], false);
-        row.dataset.albumCommentsLoaded = "error";
-        setTimeout(() => {
-            delete row.dataset.albumCommentsLoaded;
-            processAlbumRows();
-        }, 2000);
+        const days = Math.round(diffSec / 86400);
+        return `${days} ${pluralize(days, ['день', 'дня', 'дней'])} назад`;
     }
-}
 
-/* ========================================================================
-   COVER ZOOM
-======================================================================== */
+    function formatTimestamp(rawTimestamp, fallbackText) {
+        const tryParse = (value) => {
+            const num = Number(value);
+            return Number.isFinite(num) ? num : null;
+        };
 
-function enableCoverZoom() {
-    const overlay = document.createElement("div");
-    overlay.style = `
-        position:fixed;inset:0;display:none;
-        justify-content:center;align-items:center;
-        background:rgba(0,0,0,0.85);cursor:zoom-out;
-        z-index:999999;
-    `;
+        const parsed = tryParse(rawTimestamp) ?? tryParse(fallbackText);
+        if (parsed === null) return fallbackText || '';
 
-    const img = document.createElement("img");
-    img.style = `
-        max-width:90%;max-height:90%;
-        border-radius:10px;box-shadow:0 0 20px rgba(0,0,0,0.5);
-    `;
+        const timestampMs = parsed * 1000;
+        return `${formatRelative(timestampMs)} (${formatDateTime(timestampMs)})`;
+    }
 
-    overlay.appendChild(img);
-    document.body.appendChild(overlay);
+    function getLoginFromLink(link) {
+        if (!link) return '';
+        const href = link.getAttribute('href') || '';
+        const match = href.match(/\/(?:media|profile)\/([^/?#]+)/i);
+        return match?.[1] || link.textContent?.trim() || '';
+    }
 
-    overlay.addEventListener("click", () => overlay.style.display="none");
-    document.addEventListener("keydown", e => { if (e.key === "Escape") overlay.style.display="none"; });
+    function parseComments(htmlText) {
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(htmlText, 'text/html');
+        const items = doc.querySelectorAll('.comment_list li.comment_item');
 
-    function bind() {
-        document.querySelectorAll("img").forEach(i => {
-            if (i.dataset.zoomBound) return;
-            i.dataset.zoomBound = "1";
-            i.style.cursor = "zoom-in";
-            i.addEventListener("click", () => {
-                img.src = i.src;
-                overlay.style.display = "flex";
-            });
+        return Array.from(items)
+            .map((item) => {
+                const userLink = item.querySelector('.comment_username a');
+                const login = getLoginFromLink(userLink) || 'Неизвестно';
+                const author = MODERATOR_NAMES[login] || login;
+                const text = item.querySelector('.comment_body')?.textContent?.trim() || '';
+                const timeEl = item.querySelector('.comment_published .ajax-time');
+                const timeRaw = timeEl?.getAttribute('title');
+                const timeFallback = timeEl?.textContent?.trim() || '';
+                const time = formatTimestamp(timeRaw, timeFallback);
+                return { author, text, time };
+            })
+            .filter((c) => c.text);
+    }
+
+    async function fetchDetails(audioId) {
+        if (STATE.cache.has(audioId)) return STATE.cache.get(audioId);
+
+        const url = `https://rumedia.io/media/edit-track/${audioId}`;
+        const response = await fetch(url, { credentials: 'include' });
+
+        if (!response.ok) throw new Error(`Не удалось получить данные (${response.status})`);
+
+        const text = await response.text();
+        const details = parseDetails(text);
+        STATE.cache.set(audioId, details);
+        return details;
+    }
+
+    async function fetchComments(audioId) {
+        if (STATE.commentsCache.has(audioId)) return STATE.commentsCache.get(audioId);
+
+        const url = `https://rumedia.io/media/track/${audioId}`;
+        const response = await fetch(url, { credentials: 'include' });
+
+        if (!response.ok) throw new Error(`Не удалось получить комментарии (${response.status})`);
+
+        const text = await response.text();
+        const comments = parseComments(text);
+        STATE.commentsCache.set(audioId, comments);
+        return comments;
+    }
+
+    async function fetchAlbumComments(albumSlug) {
+        const cacheKey = `album:${albumSlug}`;
+        if (STATE.commentsCache.has(cacheKey)) return STATE.commentsCache.get(cacheKey);
+
+        const url = `https://rumedia.io/media/album/${albumSlug}`;
+        const response = await fetch(url, { credentials: 'include' });
+
+        if (!response.ok) throw new Error(`Не удалось получить комментарии (${response.status})`);
+
+        const text = await response.text();
+        const comments = parseComments(text);
+        STATE.commentsCache.set(cacheKey, comments);
+        return comments;
+    }
+
+    function buildHtml(details) {
+        return `
+            <div class="release-inline-details" style="margin-top:10px; padding:8px; background:#f5f5f5; border-radius:6px;">
+                <div style="margin:2px 0;"><strong>Автор инструментала:</strong> ${details.producer}</div>
+                <div style="margin:2px 0;"><strong>Вокал:</strong> ${details.vocal}</div>
+
+                <div style="margin:2px 0;">
+                    <strong>Мат:</strong>
+                    ${
+                        details.age === '18+'
+                            ? '<span style="color:red; font-weight:bold;">Есть</span>'
+                            : '<span>Нет</span>'
+                    }
+                </div>
+            </div>
+        `;
+    }
+
+    function buildCommentsHtml(comments) {
+        if (!comments || comments.length === 0) {
+            return '<div class="release-inline-comments"><h4 style="margin:0 0 6px 0;">Комментарии</h4><p style="margin:2px 0;">Комментариев нет.</p></div>';
+        }
+
+        const items = comments
+            .map((c) => {
+                const when = c.time ? `<div style="color:#555; font-size:12px; margin-top:2px;">${c.time}</div>` : '';
+                return `<li style="margin-bottom:8px; line-height:1.4;"><strong>${c.author}:</strong> <span>${c.text}</span>${when}</li>`;
+            })
+            .join('');
+
+        return `
+            <div class="release-inline-comments">
+                <h4 style="margin:0 0 6px 0;">Комментарии</h4>
+                <ul style="padding-left:18px; margin:0;">${items}</ul>
+            </div>
+        `;
+    }
+
+    function findRecognitionRow(row) {
+        let pointer = row.nextElementSibling;
+        while (pointer) {
+            const firstCellText = pointer.querySelector('td')?.textContent?.trim();
+            if (firstCellText && firstCellText.startsWith('Распознание')) return pointer;
+            const hasForm = pointer.querySelector('form input[name="audio_id"]');
+            if (hasForm) break;
+            pointer = pointer.nextElementSibling;
+        }
+        return null;
+    }
+
+    function getAlbumSlug(row) {
+        const link = row.querySelector('a[href*="/album/"]');
+        const href = link?.getAttribute('href') || '';
+        const match = href.match(/\/album\/([^/?#]+)/i);
+        return match?.[1] || null;
+    }
+
+    function renderDetails(row, details) {
+        const infoCell = row.querySelector('td:nth-child(4)');
+        if (!infoCell) return;
+
+        const existing = infoCell.querySelector('.release-inline-details');
+        const wrapper = document.createElement('div');
+        wrapper.innerHTML = buildHtml(details);
+        const content = wrapper.firstElementChild;
+
+        if (existing) existing.replaceWith(content);
+        else infoCell.appendChild(content);
+    }
+
+    function renderComments(row, comments, useRecognitionRow = true) {
+        const recognitionRow = useRecognitionRow ? findRecognitionRow(row) || row : row;
+        const commentsRow = document.createElement('tr');
+        const columnsCount = row.children.length || 1;
+
+        const commentsCell = document.createElement('td');
+        commentsCell.colSpan = columnsCount;
+        commentsCell.style.background = '#fbfbfb';
+        commentsCell.style.borderTop = '1px solid #e0e0e0';
+        commentsCell.innerHTML = buildCommentsHtml(comments);
+
+        commentsRow.className = 'release-comments-row';
+        commentsRow.appendChild(commentsCell);
+
+        const existing = recognitionRow.nextElementSibling;
+        if (existing && existing.classList.contains('release-comments-row')) {
+            existing.replaceWith(commentsRow);
+        } else {
+            recognitionRow.insertAdjacentElement('afterend', commentsRow);
+        }
+    }
+
+    async function renderReleaseInfo(form, audioId) {
+        const row = form.closest('tr');
+        if (!row) return;
+
+        try {
+            const [details, comments] = await Promise.all([fetchDetails(audioId), fetchComments(audioId)]);
+            renderDetails(row, details);
+            renderComments(row, comments);
+            form.dataset.detailsLoaded = '1';
+        } catch (error) {
+            renderDetails(row, { producer: error.message, vocal: '—', age: '—' });
+        }
+    }
+
+    function processForms() {
+        const forms = Array.from(document.querySelectorAll('form')).filter((form) =>
+            form.querySelector('input[name="audio_id"]') && form.querySelector('input[name="add_queue"]')
+        );
+
+        forms.forEach((form) => {
+            if (form.dataset.detailsLoaded) return;
+            const audioInput = form.querySelector('input[name="audio_id"]');
+            if (!audioInput?.value) return;
+
+            form.dataset.detailsLoaded = 'loading';
+            renderReleaseInfo(form, audioInput.value);
         });
     }
 
-    bind();
-    new MutationObserver(bind).observe(document.body, { childList:true, subtree:true });
-}
+    function processAlbumRows() {
+        if (!location.pathname.includes('/admin-cp/manage-albums')) return;
 
-/* ========================================================================
-   EDIT-ALBUM: AUTHORS
-======================================================================== */
+        const rows = Array.from(document.querySelectorAll('.table-responsive1 tbody tr[id]'));
 
-async function fetchTrackAuthors(id) {
-    if (STATE.authorsCache.has(id)) return STATE.authorsCache.get(id);
+        rows.forEach((row) => {
+            if (row.dataset.albumCommentsLoaded) return;
 
-    const r = await fetchWithTimeout(`https://rumedia.io/media/edit-track/${id}`, { credentials:"include" });
-    if (!r.ok) return null;
+            const albumSlug = getAlbumSlug(row);
+            if (!albumSlug) return;
 
-    const html = await r.text();
-    const doc = new DOMParser().parseFromString(html, "text/html");
+            row.dataset.albumCommentsLoaded = 'loading';
 
-    const data = {
-        written: doc.querySelector("#written")?.value?.trim() || "—",
-        producer: doc.querySelector("#producer")?.value?.trim() || "—"
-    };
-
-    STATE.authorsCache.set(id, data);
-    return data;
-}
-
-function extractTrackId(link) {
-    const href = link?.href || "";
-    const m = href.match(/edit-track\/([A-Za-z0-9]+)/);
-    return m ? m[1] : null;
-}
-
-async function enhanceAlbumEditor() {
-    if (!location.pathname.includes("/edit-album/")) return;
-
-    const blocks = document.querySelectorAll(".uploaded_albm_slist");
-
-    for (const block of blocks) {
-        if (block.dataset.authorsLoaded) continue;
-        block.dataset.authorsLoaded = "1";
-
-        const p = block.querySelector("p");
-        if (!p) continue;
-
-        const link = block.querySelector("a[data-load], a[href*='edit-track']");
-        const id = extractTrackId(link);
-        if (!id) continue;
-
-        const info = await fetchTrackAuthors(id);
-        if (!info) continue;
-
-        const vocalLine = [...p.querySelectorAll("span")]
-            .find(s => s.textContent.trim().startsWith("Вокал"));
-
-        if (!vocalLine) continue;
-
-        const div = document.createElement("div");
-        div.style.fontSize = "12px";
-        div.innerHTML = `
-    <div>Автор: <b>${info.written}</b></div>
-    <div>Автор инструментала: <b>${info.producer}</b></div>
-`;
-        vocalLine.insertAdjacentElement("afterend", div);
-
+            fetchAlbumComments(albumSlug)
+                .then((comments) => {
+                    renderComments(row, comments, false);
+                    row.dataset.albumCommentsLoaded = '1';
+                })
+                .catch((error) => {
+                    renderComments(row, [{ author: 'Ошибка', text: error.message, time: '' }], false);
+                });
+        });
     }
-}
 
-function observeAlbumEditor() {
-    if (!location.pathname.includes("/edit-album/")) return;
+    function observeTable() {
+        const table = document.querySelector('.table-responsive1, table.table');
+        if (!table) return;
 
-    const songsRoot = document.querySelector("#songs") || document.body;
-    new MutationObserver(() => enhanceAlbumEditor()).observe(songsRoot, { childList:true, subtree:true });
-}
+        const observer = new MutationObserver(() => {
+            processForms();
+            processAlbumRows();
+        });
 
-/* ========================================================================
-   INIT
-======================================================================== */
+        observer.observe(table, { childList: true, subtree: true });
+    }
 
-function observeTable() {
-    const table = document.querySelector(".table-responsive1, table.table");
-    if (!table) return;
+    function ready(callback) {
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', callback);
+        } else callback();
+    }
 
-    new MutationObserver(() => {
+    // =====================================================
+    //              УВЕЛИЧЕНИЕ ОБЛОЖЕК ПО КЛИКУ
+    // =====================================================
+
+    function enableCoverZoom() {
+        const overlay = document.createElement('div');
+        overlay.id = 'cover-zoom-overlay';
+        overlay.style = `
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.85);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 999999;
+            cursor: zoom-out;
+        `;
+
+        const img = document.createElement('img');
+        img.id = 'cover-zoom-img';
+        img.style = `
+            max-width: 90%;
+            max-height: 90%;
+            border-radius: 8px;
+            box-shadow: 0 0 20px rgba(0,0,0,0.5);
+        `;
+
+        overlay.appendChild(img);
+        document.body.appendChild(overlay);
+
+        overlay.addEventListener('click', () => {
+            overlay.style.display = 'none';
+        });
+
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') overlay.style.display = 'none';
+        });
+
+        function bindCovers() {
+            const covers = document.querySelectorAll('img');
+
+            covers.forEach((imgEl) => {
+                if (imgEl.dataset.zoomBound) return;
+                imgEl.dataset.zoomBound = '1';
+
+                imgEl.style.cursor = 'zoom-in';
+
+                imgEl.addEventListener('click', () => {
+                    const src = imgEl.src || imgEl.getAttribute('data-src');
+                    if (!src) return;
+
+                    img.src = src;
+                    overlay.style.display = 'flex';
+                });
+            });
+        }
+
+        bindCovers();
+
+        const obs = new MutationObserver(bindCovers);
+        obs.observe(document.body, { childList: true, subtree: true });
+    }
+
+    // =====================================================
+
+    ready(() => {
         processForms();
         processAlbumRows();
-        enhanceAlbumEditor();
-    }).observe(table, { childList:true, subtree:true });
-}
-
-function ready(fn) {
-    if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", fn);
-    else fn();
-}
-
-ready(() => {
-    processForms();
-    processAlbumRows();
-    enhanceAlbumEditor();
-    observeTable();
-    observeAlbumEditor();
-    enableCoverZoom();
-});
+        observeTable();
+        enableCoverZoom();
+    });
 
 })();
