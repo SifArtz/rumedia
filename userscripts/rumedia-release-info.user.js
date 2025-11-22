@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         RuMedia Helper — Details, Comments, Age, Zoom, Album Authors
+// @name         RuMedia Helper — Details, Comments, Zoom, Album Authors (v2.2)
 // @namespace    https://rumedia.io/
-// @version      2.1
-// @description  Подробности треков, комментарии, мат, zoom обложек + авторы в edit-album.
+// @version      2.2
+// @description  Подробности треков, комментарии, мат, zoom обложек и авторы в edit-album + комментарии альбома восстановлены.
 // @author       Ruslan
 // @match        https://rumedia.io/media/admin-cp/manage-songs?check*
 // @match        https://rumedia.io/media/admin-cp/manage-albums?check*
@@ -24,75 +24,69 @@ const MODERATOR_NAMES = {
     moderator: 'Илья',
 };
 
-/* ============================================================
-   ПАРСИНГ ДЕТАЛЕЙ ТРЕКА
-============================================================ */
+/* ========================================================================
+   PARSE DETAILS
+======================================================================== */
 
-function parseDetails(htmlText) {
-    const doc = new DOMParser().parseFromString(htmlText, 'text/html');
+function parseDetails(html) {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
 
     const producer = doc.querySelector('#producer')?.value?.trim() || '—';
     const vocal = doc.querySelector('#vocal option:checked')?.textContent?.trim() || '—';
 
     let age = '—';
     const ageSel = doc.querySelector('#age_restriction');
-    if (ageSel) age = ageSel.value === '1' ? '18+' : '0+';
+    if (ageSel) age = ageSel.value === "1" ? "18+" : "0+";
 
     return { producer, vocal, age };
 }
 
-/* ============================================================
-   ПАРСИНГ КОММЕНТАРИЕВ
-============================================================ */
+/* ========================================================================
+   PARSE COMMENTS
+======================================================================== */
 
-function parseComments(htmlText) {
-    const doc = new DOMParser().parseFromString(htmlText, 'text/html');
+function parseComments(html) {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
     const items = doc.querySelectorAll('.comment_item');
 
-    return Array.from(items)
-        .map((it) => {
-            const login = it.querySelector('.comment_username a')?.textContent?.trim() || 'Неизвестно';
-            const author = MODERATOR_NAMES[login] || login;
+    return [...items].map(i => {
+        const login = i.querySelector('.comment_username a')?.textContent?.trim() || 'Неизвестно';
+        const author = MODERATOR_NAMES[login] || login;
 
-            const text = it.querySelector('.comment_body')?.textContent?.trim() || '';
+        const text = i.querySelector('.comment_body')?.textContent?.trim() || '';
 
-            const timeEl = it.querySelector('.ajax-time');
-            const raw = timeEl?.getAttribute('title');
-            const fallback = timeEl?.textContent?.trim() || '';
-            const parsed = Number(raw) || Number(fallback);
+        const t = i.querySelector('.ajax-time');
+        const raw = t?.getAttribute('title');
+        const fb = t?.textContent?.trim() || '';
 
-            let when = fallback;
-            if (parsed) {
-                const ts = parsed * 1000;
-                const date = new Date(ts);
-                when = date.toLocaleString();
-            }
+        let time = fb;
+        const num = Number(raw) || Number(fb);
+        if (num) time = new Date(num * 1000).toLocaleString();
 
-            return { author, text, time: when };
-        })
-        .filter(c => c.text);
+        return { author, text, time };
+    }).filter(x => x.text);
 }
 
-/* ============================================================
-    FETCH
-============================================================ */
+/* ========================================================================
+   FETCH
+======================================================================== */
 
 async function fetchDetails(id) {
     if (STATE.cache.has(id)) return STATE.cache.get(id);
 
-    const r = await fetch(`https://rumedia.io/media/edit-track/${id}`, { credentials: "include" });
+    const r = await fetch(`https://rumedia.io/media/edit-track/${id}`, { credentials:"include" });
     if (!r.ok) throw new Error("Ошибка " + r.status);
 
     const html = await r.text();
-    const details = parseDetails(html);
-    STATE.cache.set(id, details);
-    return details;
+    const data = parseDetails(html);
+    STATE.cache.set(id, data);
+    return data;
 }
 
-async function fetchComments(id) {
+async function fetchCommentsTrack(id) {
     if (STATE.commentsCache.has(id)) return STATE.commentsCache.get(id);
 
-    const r = await fetch(`https://rumedia.io/media/track/${id}`, { credentials: "include" });
+    const r = await fetch(`https://rumedia.io/media/track/${id}`, { credentials:"include" });
     if (!r.ok) throw new Error("Ошибка " + r.status);
 
     const html = await r.text();
@@ -101,14 +95,27 @@ async function fetchComments(id) {
     return data;
 }
 
-/* ============================================================
-   HTML ВСТАВКИ
-============================================================ */
+async function fetchAlbumComments(slug) {
+    const key = "album:" + slug;
+    if (STATE.commentsCache.has(key)) return STATE.commentsCache.get(key);
 
-function buildHtml(details) {
+    const r = await fetch(`https://rumedia.io/media/album/${slug}`, { credentials:"include" });
+    if (!r.ok) throw new Error("Ошибка " + r.status);
+
+    const html = await r.text();
+    const data = parseComments(html);
+    STATE.commentsCache.set(key, data);
+    return data;
+}
+
+/* ========================================================================
+   HTML TEMPLATES
+======================================================================== */
+
+function buildDetails(details) {
     return `
         <div class="release-inline-details"
-            style="margin-top:10px;padding:8px;background:#f5f5f5;border-radius:6px;">
+             style="margin-top:10px;padding:8px;background:#f5f5f5;border-radius:6px;">
             <div><b>Автор инструментала:</b> ${details.producer}</div>
             <div><b>Вокал:</b> ${details.vocal}</div>
             <div><b>Мат:</b> ${
@@ -116,32 +123,33 @@ function buildHtml(details) {
                 ? '<span style="color:red;font-weight:bold;">Есть</span>'
                 : 'Нет'
             }</div>
-        </div>`;
+        </div>
+    `;
 }
 
-function buildCommentsHtml(arr) {
-    if (!arr.length)
-        return `<p style="margin:5px 0;">Комментариев нет.</p>`;
+function buildCommentsBlock(arr) {
+    if (!arr.length) return `<p style="margin:5px 0;">Комментариев нет.</p>`;
 
     return `
         <ul style="padding-left:18px;margin:0;">
-        ${arr.map(c => `
-            <li style="margin-bottom:6px;">
-                <b>${c.author}:</b> ${c.text}
-                <div style="font-size:12px;color:#555;">${c.time}</div>
-            </li>
-        `).join('')}
-        </ul>`;
+            ${arr.map(c => `
+                <li style="margin-bottom:6px;">
+                    <b>${c.author}:</b> ${c.text}
+                    <div style="font-size:12px;color:#555;">${c.time}</div>
+                </li>
+            `).join("")}
+        </ul>
+    `;
 }
 
-/* ============================================================
-   МОДЕРАЦИЯ — ВСТАВКА
-============================================================ */
+/* ========================================================================
+   RENDER DETAILS/COMMENTS (moderation)
+======================================================================== */
 
 function findRecognitionRow(row) {
     let p = row.nextElementSibling;
     while (p) {
-        const txt = p.querySelector('td')?.textContent?.trim() || '';
+        const txt = p.querySelector("td")?.textContent?.trim() || "";
         if (txt.startsWith("Распознание")) return p;
         if (p.querySelector('input[name="audio_id"]')) break;
         p = p.nextElementSibling;
@@ -149,57 +157,58 @@ function findRecognitionRow(row) {
     return null;
 }
 
-function renderDetails(row, details) {
-    const cell = row.querySelector('td:nth-child(4)');
+function renderDetailsRow(row, details) {
+    const cell = row.querySelector("td:nth-child(4)");
     if (!cell) return;
 
-    const wrap = document.createElement('div');
-    wrap.innerHTML = buildHtml(details);
+    const wrap = document.createElement("div");
+    wrap.innerHTML = buildDetails(details);
 
-    const old = cell.querySelector('.release-inline-details');
+    const old = cell.querySelector(".release-inline-details");
     if (old) old.replaceWith(wrap.firstElementChild);
     else cell.appendChild(wrap.firstElementChild);
 }
 
-function renderComments(row, comments, useRec = true) {
+function renderCommentsRow(row, comments, useRec = true) {
     const base = useRec ? (findRecognitionRow(row) || row) : row;
 
-    const tr = document.createElement('tr');
-    tr.className = 'release-comments-row';
+    const tr = document.createElement("tr");
+    tr.className = "release-comments-row";
 
-    const td = document.createElement('td');
+    const td = document.createElement("td");
     td.colSpan = row.children.length;
     td.style.background = "#fbfbfb";
     td.style.borderTop = "1px solid #e0e0e0";
     td.innerHTML = `
         <div class="release-inline-comments">
             <h4 style="margin:0 0 6px 0;">Комментарии</h4>
-            ${buildCommentsHtml(comments)}
+            ${buildCommentsBlock(comments)}
         </div>
     `;
 
     tr.appendChild(td);
 
-    const next = base.nextElementSibling;
-    if (next?.classList.contains('release-comments-row')) next.replaceWith(tr);
+    const nxt = base.nextElementSibling;
+    if (nxt?.classList.contains("release-comments-row")) nxt.replaceWith(tr);
     else base.insertAdjacentElement("afterend", tr);
 }
 
-async function renderReleaseInfo(form, id) {
+async function renderTrackInfo(form, id) {
     const row = form.closest("tr");
     if (!row) return;
 
     try {
         const [details, comments] = await Promise.all([
             fetchDetails(id),
-            fetchComments(id)
+            fetchCommentsTrack(id)
         ]);
 
-        renderDetails(row, details);
-        renderComments(row, comments);
+        renderDetailsRow(row, details);
+        renderCommentsRow(row, comments);
+
         form.dataset.detailsLoaded = "1";
     } catch (e) {
-        renderDetails(row, { producer: e.message, vocal: '—', age: '—' });
+        renderDetailsRow(row, { producer: e.message, vocal:"—", age:"—" });
     }
 }
 
@@ -208,37 +217,73 @@ function processForms() {
         .filter(f => f.querySelector('input[name="audio_id"]') &&
                      f.querySelector('input[name="add_queue"]'));
 
-    forms.forEach(f => {
-        if (f.dataset.detailsLoaded) return;
+    for (const f of forms) {
+        if (f.dataset.detailsLoaded) continue;
         const id = f.querySelector('input[name="audio_id"]')?.value;
-        if (!id) return;
+        if (!id) continue;
         f.dataset.detailsLoaded = "loading";
-        renderReleaseInfo(f, id);
-    });
+        renderTrackInfo(f, id);
+    }
 }
 
-/* ============================================================
-   ZOOM КАРТИНОК
-============================================================ */
+/* ========================================================================
+   PROCESS ALBUM ROWS (restored)
+======================================================================== */
+
+function getAlbumSlug(row) {
+    const a = row.querySelector("a[href*='/album/']");
+    const href = a?.getAttribute("href") || "";
+    const m = href.match(/\/album\/([^/?#]+)/);
+    return m ? m[1] : null;
+}
+
+async function processAlbumRows() {
+    if (!location.pathname.includes("/manage-albums")) return;
+
+    const rows = document.querySelectorAll(".table-responsive1 tbody tr[id]");
+
+    for (const row of rows) {
+        if (row.dataset.albumCommentsLoaded) continue;
+
+        const slug = getAlbumSlug(row);
+        if (!slug) continue;
+
+        row.dataset.albumCommentsLoaded = "loading";
+
+        try {
+            const comments = await fetchAlbumComments(slug);
+            renderCommentsRow(row, comments, false);
+            row.dataset.albumCommentsLoaded = "1";
+        } catch (e) {
+            renderCommentsRow(row, [{ author:"Ошибка", text:e.message, time:"" }], false);
+        }
+    }
+}
+
+/* ========================================================================
+   COVER ZOOM
+======================================================================== */
 
 function enableCoverZoom() {
     const overlay = document.createElement("div");
     overlay.style = `
         position:fixed;inset:0;display:none;
         justify-content:center;align-items:center;
-        background:rgba(0,0,0,0.85);
-        z-index:999999;cursor:zoom-out;
+        background:rgba(0,0,0,0.85);cursor:zoom-out;
+        z-index:999999;
     `;
+
     const img = document.createElement("img");
-    img.style = "max-width:90%;max-height:90%;border-radius:10px;";
+    img.style = `
+        max-width:90%;max-height:90%;
+        border-radius:10px;box-shadow:0 0 20px rgba(0,0,0,0.5);
+    `;
 
     overlay.appendChild(img);
     document.body.appendChild(overlay);
 
-    overlay.addEventListener("click", () => overlay.style.display = "none");
-    document.addEventListener("keydown", e => {
-        if (e.key === "Escape") overlay.style.display = "none";
-    });
+    overlay.addEventListener("click", () => overlay.style.display="none");
+    document.addEventListener("keydown", e => { if (e.key === "Escape") overlay.style.display="none"; });
 
     function bind() {
         document.querySelectorAll("img").forEach(i => {
@@ -256,9 +301,9 @@ function enableCoverZoom() {
     new MutationObserver(bind).observe(document.body, { childList:true, subtree:true });
 }
 
-/* ============================================================
-   AUTHORS в edit-album (исправлено)
-============================================================ */
+/* ========================================================================
+   EDIT-ALBUM: AUTHORS
+======================================================================== */
 
 async function fetchTrackAuthors(id) {
     const r = await fetch(`https://rumedia.io/media/edit-track/${id}`, { credentials:"include" });
@@ -273,14 +318,14 @@ async function fetchTrackAuthors(id) {
     };
 }
 
-function getTrackIdFromLink(a) {
-    const href = a?.href || "";
+function extractTrackId(link) {
+    const href = link?.href || "";
     const m = href.match(/edit-track\/([A-Za-z0-9]+)/);
     return m ? m[1] : null;
 }
 
 async function enhanceAlbumEditor() {
-    if (!location.pathname.includes("/media/edit-album/")) return;
+    if (!location.pathname.includes("/edit-album/")) return;
 
     const blocks = document.querySelectorAll(".uploaded_albm_slist");
 
@@ -292,15 +337,14 @@ async function enhanceAlbumEditor() {
         if (!p) continue;
 
         const link = block.querySelector("a[data-load], a[href*='edit-track']");
-        const id = getTrackIdFromLink(link);
+        const id = extractTrackId(link);
         if (!id) continue;
 
         const info = await fetchTrackAuthors(id);
         if (!info) continue;
 
-        // найдём строку Вокал: ...
         const vocalLine = [...p.querySelectorAll("span")]
-            .find(sp => sp.textContent.trim().startsWith("Вокал"));
+            .find(s => s.textContent.trim().startsWith("Вокал"));
 
         if (!vocalLine) continue;
 
@@ -315,27 +359,29 @@ async function enhanceAlbumEditor() {
     }
 }
 
-/* ============================================================
-   ИНИЦИАЛИЗАЦИЯ
-============================================================ */
+/* ========================================================================
+   INIT
+======================================================================== */
 
 function observeTable() {
-    const t = document.querySelector(".table-responsive1, table.table");
-    if (!t) return;
+    const table = document.querySelector(".table-responsive1, table.table");
+    if (!table) return;
+
     new MutationObserver(() => {
         processForms();
+        processAlbumRows();
         enhanceAlbumEditor();
-    }).observe(t, { childList:true, subtree:true });
+    }).observe(table, { childList:true, subtree:true });
 }
 
 function ready(fn) {
-    if (document.readyState === "loading")
-        document.addEventListener("DOMContentLoaded", fn);
+    if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", fn);
     else fn();
 }
 
 ready(() => {
     processForms();
+    processAlbumRows();
     enhanceAlbumEditor();
     observeTable();
     enableCoverZoom();
