@@ -1,10 +1,11 @@
 // ==UserScript==
 // @name         RuMedia Release Details Helper
 // @namespace    https://rumedia.io/
-// @version      1.4.0
+// @version      1.5.0
 // @description  Показывает подробности релиза (Автор инструментала, вокал) и наличие модераторских комментариев прямо в списке очереди модерации.
 // @author       Custom
 // @match        https://rumedia.io/media/admin-cp/manage-songs*
+// @match        https://rumedia.io/media/admin-cp/manage-albums*
 // @grant        none
 // ==/UserScript==
 
@@ -142,6 +143,24 @@
         return comments;
     }
 
+    async function fetchAlbumComments(albumSlug) {
+        const cacheKey = `album:${albumSlug}`;
+        if (STATE.commentsCache.has(cacheKey)) {
+            return STATE.commentsCache.get(cacheKey);
+        }
+
+        const url = `https://rumedia.io/media/album/${albumSlug}`;
+        const response = await fetch(url, { credentials: 'include' });
+        if (!response.ok) {
+            throw new Error(`Не удалось получить комментарии (${response.status})`);
+        }
+
+        const text = await response.text();
+        const comments = parseComments(text);
+        STATE.commentsCache.set(cacheKey, comments);
+        return comments;
+    }
+
     function buildHtml(details) {
         return `
             <div class="release-inline-details" style="margin-top:10px; padding:8px; background:#f5f5f5; border-radius:6px;">
@@ -187,6 +206,13 @@
         return null;
     }
 
+    function getAlbumSlug(row) {
+        const link = row.querySelector('a[href*="/album/"]');
+        const href = link?.getAttribute('href') || '';
+        const match = href.match(/\/album\/([^/?#]+)/i);
+        return match?.[1] || null;
+    }
+
     function renderDetails(row, details) {
         const infoCell = row.querySelector('td:nth-child(4)');
         if (!infoCell) {
@@ -204,8 +230,8 @@
         }
     }
 
-    function renderComments(row, comments) {
-        const recognitionRow = findRecognitionRow(row) || row;
+    function renderComments(row, comments, useRecognitionRow = true) {
+        const recognitionRow = useRecognitionRow ? findRecognitionRow(row) || row : row;
         const commentsRow = document.createElement('tr');
         const columnsCount = row.children.length || 1;
         const commentsCell = document.createElement('td');
@@ -258,13 +284,44 @@
         });
     }
 
+    function processAlbumRows() {
+        if (!location.pathname.includes('/admin-cp/manage-albums')) {
+            return;
+        }
+
+        const rows = Array.from(document.querySelectorAll('.table-responsive1 tbody tr[id]'));
+        rows.forEach((row) => {
+            if (row.dataset.albumCommentsLoaded) {
+                return;
+            }
+
+            const albumSlug = getAlbumSlug(row);
+            if (!albumSlug) {
+                return;
+            }
+
+            row.dataset.albumCommentsLoaded = 'loading';
+            fetchAlbumComments(albumSlug)
+                .then((comments) => {
+                    renderComments(row, comments, false);
+                    row.dataset.albumCommentsLoaded = '1';
+                })
+                .catch((error) => {
+                    renderComments(row, [{ author: 'Ошибка', text: error.message, time: '' }], false);
+                });
+        });
+    }
+
     function observeTable() {
         const table = document.querySelector('.table-responsive1, table.table');
         if (!table) {
             return;
         }
 
-        const observer = new MutationObserver(() => processForms());
+        const observer = new MutationObserver(() => {
+            processForms();
+            processAlbumRows();
+        });
         observer.observe(table, { childList: true, subtree: true });
     }
 
@@ -278,6 +335,7 @@
 
     ready(() => {
         processForms();
+        processAlbumRows();
         observeTable();
     });
 })();
