@@ -20,6 +20,7 @@
     const MODERATOR_NAMES = {
         moderator3: 'Руслан',
         moderator7: 'Матвей',
+        moderator: 'Илья',
     };
 
     function parseDetails(htmlText) {
