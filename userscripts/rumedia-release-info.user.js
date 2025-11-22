@@ -1,11 +1,11 @@
 // ==UserScript==
 // @name         RuMedia Release Details Helper
 // @namespace    https://rumedia.io/
-// @version      1.5.0
+// @version      1.5.1
 // @description  Показывает подробности релиза (Автор инструментала, вокал) и наличие модераторских комментариев прямо в списке очереди модерации.
-// @author       Custom
-// @match        https://rumedia.io/media/admin-cp/manage-songs*
-// @match        https://rumedia.io/media/admin-cp/manage-albums*
+// @author       Ruslan
+// @match        https://rumedia.io/media/admin-cp/manage-songs?check*
+// @match        https://rumedia.io/media/admin-cp/manage-albums?check*
 // @grant        none
 // ==/UserScript==
 
