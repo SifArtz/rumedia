@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         RuMedia Release Details Helper
 // @namespace    https://rumedia.io/
-// @version      1.6.0
-// @description  Показывает подробности релиза (Автор инструментала, вокал, мат), и наличие модераторских комментариев прямо в списке очереди модерации.
+// @version      1.7.0
+// @description  Подробности релиза + комменты + Мат + увеличение обложек по клику прямо в очереди модерации на RuMedia.io.
 // @author       Ruslan
 // @match        https://rumedia.io/media/admin-cp/manage-songs?check*
 // @match        https://rumedia.io/media/admin-cp/manage-albums?check*
@@ -30,12 +30,11 @@
         const producer = doc.querySelector('input#producer')?.value?.trim() || '—';
         const vocal = doc.querySelector('select#vocal option:checked')?.textContent?.trim() || '—';
 
-        // ---------- NEW: AGE RESTRICTION ("Мат")
+        // === AGE / Мат ===
         let age = '—';
         const ageSelect = doc.querySelector('select#age_restriction');
         if (ageSelect) {
             const val = ageSelect.value.trim();
-            // 0 — все возрасты, 1 — 18+
             age = (val === '1') ? '18+' : '0+';
         }
 
@@ -78,9 +77,7 @@
         };
 
         const parsed = tryParse(rawTimestamp) ?? tryParse(fallbackText);
-        if (parsed === null) {
-            return fallbackText || '';
-        }
+        if (parsed === null) return fallbackText || '';
 
         const timestampMs = parsed * 1000;
         return `${formatRelative(timestampMs)} (${formatDateTime(timestampMs)})`;
@@ -119,9 +116,7 @@
         const url = `https://rumedia.io/media/edit-track/${audioId}`;
         const response = await fetch(url, { credentials: 'include' });
 
-        if (!response.ok) {
-            throw new Error(`Не удалось получить данные (${response.status})`);
-        }
+        if (!response.ok) throw new Error(`Не удалось получить данные (${response.status})`);
 
         const text = await response.text();
         const details = parseDetails(text);
@@ -164,7 +159,6 @@
                 <div style="margin:2px 0;"><strong>Автор инструментала:</strong> ${details.producer}</div>
                 <div style="margin:2px 0;"><strong>Вокал:</strong> ${details.vocal}</div>
 
-                <!-- NEW: AGE ("Мат") -->
                 <div style="margin:2px 0;">
                     <strong>Мат:</strong>
                     ${
@@ -322,9 +316,76 @@
         } else callback();
     }
 
+    // =====================================================
+    //              УВЕЛИЧЕНИЕ ОБЛОЖЕК ПО КЛИКУ
+    // =====================================================
+
+    function enableCoverZoom() {
+        const overlay = document.createElement('div');
+        overlay.id = 'cover-zoom-overlay';
+        overlay.style = `
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.85);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 999999;
+            cursor: zoom-out;
+        `;
+
+        const img = document.createElement('img');
+        img.id = 'cover-zoom-img';
+        img.style = `
+            max-width: 90%;
+            max-height: 90%;
+            border-radius: 8px;
+            box-shadow: 0 0 20px rgba(0,0,0,0.5);
+        `;
+
+        overlay.appendChild(img);
+        document.body.appendChild(overlay);
+
+        overlay.addEventListener('click', () => {
+            overlay.style.display = 'none';
+        });
+
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') overlay.style.display = 'none';
+        });
+
+        function bindCovers() {
+            const covers = document.querySelectorAll('img');
+
+            covers.forEach((imgEl) => {
+                if (imgEl.dataset.zoomBound) return;
+                imgEl.dataset.zoomBound = '1';
+
+                imgEl.style.cursor = 'zoom-in';
+
+                imgEl.addEventListener('click', () => {
+                    const src = imgEl.src || imgEl.getAttribute('data-src');
+                    if (!src) return;
+
+                    img.src = src;
+                    overlay.style.display = 'flex';
+                });
+            });
+        }
+
+        bindCovers();
+
+        const obs = new MutationObserver(bindCovers);
+        obs.observe(document.body, { childList: true, subtree: true });
+    }
+
+    // =====================================================
+
     ready(() => {
         processForms();
         processAlbumRows();
         observeTable();
+        enableCoverZoom();
     });
+
 })();
