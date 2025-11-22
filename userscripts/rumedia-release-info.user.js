@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         RuMedia Release Details Helper
 // @namespace    https://rumedia.io/
-// @version      1.7.0
+// @version      1.8.0
 // @description  Подробности релиза + комменты + Мат + увеличение обложек по клику прямо в очереди модерации на RuMedia.io.
 // @author       Ruslan
 // @match        https://rumedia.io/media/admin-cp/manage-songs?check*
@@ -28,6 +28,7 @@
         const doc = parser.parseFromString(htmlText, 'text/html');
 
         const producer = doc.querySelector('input#producer')?.value?.trim() || '—';
+        const author = doc.querySelector('input#author')?.value?.trim() || '—';
         const vocal = doc.querySelector('select#vocal option:checked')?.textContent?.trim() || '—';
 
         // === AGE / Мат ===
@@ -38,7 +39,7 @@
             age = (val === '1') ? '18+' : '0+';
         }
 
-        return { producer, vocal, age };
+        return { producer, vocal, age, author };
     }
 
     function pluralize(value, forms) {
@@ -310,10 +311,78 @@
         observer.observe(table, { childList: true, subtree: true });
     }
 
+    function observeAlbumEditPage() {
+        if (!location.pathname.includes('/media/edit-album/')) return;
+
+        const songsContainer = document.querySelector('#songs') || document.body;
+
+        const observer = new MutationObserver(() => {
+            processAlbumEditPage();
+        });
+
+        observer.observe(songsContainer, { childList: true, subtree: true });
+    }
+
     function ready(callback) {
         if (document.readyState === 'loading') {
             document.addEventListener('DOMContentLoaded', callback);
         } else callback();
+    }
+
+    // =====================================================
+    //           ПОДРОБНОСТИ ТРЕКОВ НА СТРАНИЦЕ АЛЬБОМА
+    // =====================================================
+
+    function findVocalSpan(container) {
+        return Array.from(container.querySelectorAll('span')).find((span) => span.textContent?.includes('Вокал'));
+    }
+
+    function renderAlbumTrackDetails(container, details) {
+        const vocalSpan = findVocalSpan(container);
+        if (!vocalSpan) return;
+
+        const wrapper = document.createElement('div');
+        wrapper.className = 'album-inline-details';
+        wrapper.style = 'margin-top:4px; font-size:12px; line-height:1.4;';
+        wrapper.innerHTML = `
+            <div><strong>Автор:</strong> ${details.author}</div>
+            <div><strong>Автор инструментала:</strong> ${details.producer}</div>
+        `;
+
+        const existing = container.querySelector('.album-inline-details');
+        if (existing) existing.replaceWith(wrapper);
+        else vocalSpan.insertAdjacentElement('afterend', wrapper);
+    }
+
+    function getTrackSlugFromAlbumSong(container) {
+        const editLink = container.querySelector('a[href*="/media/edit-track/"]');
+        const href = editLink?.getAttribute('href') || '';
+        const match = href.match(/\/edit-track\/([^/?#]+)/i);
+        return match?.[1] || null;
+    }
+
+    async function enhanceAlbumSong(container) {
+        if (container.dataset.albumTrackDetailsLoaded) return;
+
+        const trackSlug = getTrackSlugFromAlbumSong(container);
+        if (!trackSlug) return;
+
+        container.dataset.albumTrackDetailsLoaded = 'loading';
+
+        try {
+            const details = await fetchDetails(trackSlug);
+            renderAlbumTrackDetails(container, details);
+            container.dataset.albumTrackDetailsLoaded = '1';
+        } catch (error) {
+            renderAlbumTrackDetails(container, { author: 'Ошибка загрузки', producer: error.message });
+        }
+    }
+
+    function processAlbumEditPage() {
+        if (!location.pathname.includes('/media/edit-album/')) return;
+
+        const songs = document.querySelectorAll('.uploaded_albm_slist');
+        songs.forEach(enhanceAlbumSong);
     }
 
     // =====================================================
@@ -384,7 +453,9 @@
     ready(() => {
         processForms();
         processAlbumRows();
+        processAlbumEditPage();
         observeTable();
+        observeAlbumEditPage();
         enableCoverZoom();
     });
 
